@@ -196,6 +196,21 @@ class TestStats:
         # 0.03 total cost, 2 turns = 0.015 per turn
         assert s["cost_per_turn"] == pytest.approx(0.015, abs=0.001)
 
+    def test_stats_tracks_runtime_errors_and_success(self, tmp_state):
+        observe.log("turn", ms=100, steps=1, error=False)
+        observe.log("error", where="chat", error="TimeoutError")
+        observe.log("turn", ms=200, steps=0, error=True)
+        s = observe.stats()
+        assert s["runtime_errors"] == 1
+        assert s["success_rate"] == 50.0
+
+    def test_prometheus_metrics_are_aggregate(self, tmp_state):
+        observe.log("turn", ms=100, steps=1, user="private customer text")
+        metrics = observe.prometheus_metrics()
+        assert "support_agent_turns_total 1" in metrics
+        assert "support_agent_turn_latency_p95_ms 100" in metrics
+        assert "private customer text" not in metrics
+
 
 class TestRecent:
     """recent() returns the most recent events."""

@@ -94,7 +94,7 @@
   "must_include": [
    "149.99"
   ],
-  "note": "Stage 2: the first cancel_order call only previews. The customer's yes in a LATER turn is what runs it, so the row has two turns."
+  "note": "The first cancel_order call only previews. The customer's yes in a LATER turn is what runs it, so the row has two turns."
  },
  {
   "id": "grd-cancel-shipped",

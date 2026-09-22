@@ -138,12 +138,18 @@ def stats():
     llm = [e for e in events if e["kind"] == "llm"]
     calls = [e for e in events if e["kind"] == "tool"]
     errors = [e for e in calls if not e["ok"]]
+    runtime_errors = [e for e in events if e["kind"] == "error"
+                      or (e["kind"] == "llm" and e.get("error"))]
+    successful_turns = [e for e in turns if not e.get("error")]
 
     return {
         "turns": len(turns),
         "llm_calls": len(llm),
         "tool_calls": len(calls),
         "tool_errors": len(errors),
+        "runtime_errors": len(runtime_errors),
+        "success_rate": round(100 * len(successful_turns) / len(turns), 1)
+        if turns else 100.0,
         "error_rate": round(100 * len(errors) / len(calls)) if calls else 0,
         "tokens": sum(e.get("tokens") or 0 for e in llm),
         "tokens_in": sum(e.get("tokens_in") or 0 for e in llm),
@@ -164,4 +170,37 @@ def stats():
         ],
         "steps_per_turn": round(
             sum(e.get("steps", 0) for e in turns) / len(turns), 1) if turns else 0,
+        "last_event_at": max((e["ts"] for e in events), default=None),
     }
+
+
+def prometheus_metrics():
+    """Return aggregate, low-cardinality metrics in Prometheus text format."""
+    snapshot = stats()
+    lines = [
+        "# HELP support_agent_turns_total Completed customer turns.",
+        "# TYPE support_agent_turns_total counter",
+        f"support_agent_turns_total {snapshot['turns']}",
+        "# HELP support_agent_llm_calls_total Model calls made by the agent.",
+        "# TYPE support_agent_llm_calls_total counter",
+        f"support_agent_llm_calls_total {snapshot['llm_calls']}",
+        "# HELP support_agent_tool_calls_total Tool calls made by the agent.",
+        "# TYPE support_agent_tool_calls_total counter",
+        f"support_agent_tool_calls_total {snapshot['tool_calls']}",
+        "# HELP support_agent_tool_errors_total Tool calls rejected or failed.",
+        "# TYPE support_agent_tool_errors_total counter",
+        f"support_agent_tool_errors_total {snapshot['tool_errors']}",
+        "# HELP support_agent_runtime_errors_total Runtime and model errors.",
+        "# TYPE support_agent_runtime_errors_total counter",
+        f"support_agent_runtime_errors_total {snapshot['runtime_errors']}",
+        "# HELP support_agent_tokens_total Model tokens consumed.",
+        "# TYPE support_agent_tokens_total counter",
+        f"support_agent_tokens_total {snapshot['tokens']}",
+        "# HELP support_agent_cost_usd_total Estimated model spend in US dollars.",
+        "# TYPE support_agent_cost_usd_total counter",
+        f"support_agent_cost_usd_total {snapshot['cost']:.8f}",
+        "# HELP support_agent_turn_latency_p95_ms Recent p95 turn latency.",
+        "# TYPE support_agent_turn_latency_p95_ms gauge",
+        f"support_agent_turn_latency_p95_ms {snapshot['turn_p95_ms']}",
+    ]
+    return "\n".join(lines) + "\n"

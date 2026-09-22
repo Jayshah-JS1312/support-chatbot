@@ -1,4 +1,4 @@
-name: support-chatbot
+name: customer-support-agent
 
 services:
   app:
@@ -7,7 +7,9 @@ services:
       - path: .env
         required: false
     environment:
-      SUPPORT_CHATBOT_EXPOSE_INTERNAL_UI: "false"
+      # Local Docker exposes the monitoring console. Set to false before
+      # deploying publicly unless the route sits behind authentication.
+      SUPPORT_CHATBOT_EXPOSE_INTERNAL_UI: "true"
       SUPPORT_CHATBOT_SECURE_COOKIES: "false"
     ports:
       - "8000:8000"

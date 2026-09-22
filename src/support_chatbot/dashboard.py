@@ -1,4 +1,4 @@
-"""The observability page: /logs
+"""The observability page: /monitoring (with /logs kept as an alias).
 
 Three sections, in the order you actually debug in:
 

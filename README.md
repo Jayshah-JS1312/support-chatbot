@@ -1,4 +1,4 @@
-# Support Chatbot
+# Customer Support Agent
 
 A tool-using customer-support agent with deterministic policy checks, short- and
 long-term memory, local retrieval, observability, and live-model evaluations.
@@ -16,6 +16,8 @@ baseline.
 - Card-number redaction, injection signalling, and output identifier checks
 - A local ChromaDB knowledge index using `bge-micro-v2`
 - Browser and terminal interfaces
+- Responsive customer chat UI with built-in demo prompts
+- Operations dashboard plus health, readiness, and Prometheus metrics endpoints
 - Deterministic unit tests and opt-in live LLM evaluations
 
 The commerce backend is still a local simulator. Connecting authenticated,
@@ -29,6 +31,7 @@ tests/                 deterministic unit and policy tests
 evaluations/           opt-in behavioral and model-judged evaluations
 scripts/               feedback and retrieval benchmarking utilities
 docs/                  architecture, deployment, and security guidance
+test-data/             ready-to-run manual conversation scenarios
 .github/workflows/     CI for deterministic checks
 ```
 
@@ -48,9 +51,14 @@ support-chatbot-web
 support-chatbot
 ```
 
-The browser UI is available at <http://127.0.0.1:8000>. Internal traces and
-the `/logs` endpoints are disabled by default. Enable them only in a trusted
-development environment with `SUPPORT_CHATBOT_EXPOSE_INTERNAL_UI=true`.
+The browser UI is available at <http://127.0.0.1:8000>. When internal views are
+enabled, the monitoring console is at <http://127.0.0.1:8000/monitoring>.
+Internal traces can contain customer text, so put that route behind operator
+authentication in production.
+
+For demo customers, order numbers, and more than 30 test conversations, see
+[the manual testing guide](docs/manual-testing.md). Machine-readable scenarios
+are also available in [`test-data/chat-scenarios.json`](test-data/chat-scenarios.json).
 
 ## Validation
 
@@ -70,6 +78,8 @@ therefore intentionally excluded from default CI.
 ```bash
 docker compose up --build
 curl http://localhost:8000/healthz
+curl http://localhost:8000/readyz
+curl http://localhost:8000/metrics
 ```
 
 Read [deployment](docs/deployment.md), [architecture](docs/architecture.md),

@@ -4,10 +4,13 @@
 
 1. Copy `.env.example` to `.env` and set the model credentials.
 2. Run `docker compose up --build`.
-3. Verify `GET /healthz` returns `{"status":"ok"}`.
+3. Verify `GET /healthz` returns `{"status":"ok"}` and `GET /readyz`
+   reports `ready`.
 
 The container runs as an unprivileged user and persists runtime state beneath
-`/data`. Internal logs and reasoning views are disabled by default.
+`/data`. The Compose configuration enables the monitoring console for the
+local demo. Disable it before a public deployment unless the route is protected
+by operator authentication.
 
 ## Environment
 
@@ -22,7 +25,17 @@ The container runs as an unprivileged user and persists runtime state beneath
 | `SUPPORT_CHATBOT_CACHE_DIR` | Model/vector cache | repository `.cache/` |
 | `SUPPORT_CHATBOT_MAX_REQUEST_BYTES` | Request-body limit | `65536` |
 | `SUPPORT_CHATBOT_SECURE_COOKIES` | Add the cookie `Secure` flag | `false` |
-| `SUPPORT_CHATBOT_EXPOSE_INTERNAL_UI` | Enable traces and `/logs` | `false` |
+| `SUPPORT_CHATBOT_EXPOSE_INTERNAL_UI` | Enable traces and `/monitoring` | `false` |
+
+## Runtime endpoints
+
+| Endpoint | Purpose | Exposure |
+|---|---|---|
+| `/healthz` | Liveness probe | aggregate, no customer data |
+| `/readyz` | Readiness and model name | aggregate, no customer data |
+| `/metrics` | Prometheus metrics | aggregate, no customer data |
+| `/monitoring` | Operator dashboard | internal only |
+| `/trace.jsonl` | Raw agent events | internal only |
 
 ## Before internet exposure
 

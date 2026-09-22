@@ -13,6 +13,7 @@ The page markup lives in ui/chat.html.
 
 import json
 import threading
+import time
 import uuid
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -41,6 +42,7 @@ LONGTERM = LongTermMemory()               # shared: it is keyed by customer, not
 FEEDBACK_FILE = STATE_DIR / "feedback.jsonl"
 SESSION_LOCK = threading.RLock()
 FEEDBACK_LOCK = threading.Lock()
+STARTED_AT = time.time()
 
 # One session PER BROWSER, keyed by a cookie. The earlier version kept a
 # single global conversation, which meant two people on the same server —
@@ -163,14 +165,26 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/healthz":
             self._send(json.dumps({"status": "ok"}))
+        elif self.path == "/readyz":
+            self._send(json.dumps({"status": "ready", "model": MODEL}))
+        elif self.path == "/metrics":
+            self._send(observe.prometheus_metrics(), "text/plain; version=0.0.4")
         elif self.path in ("/", "/index.html"):
             self._session()                      # mint the cookie on first load
             self._send(PAGE, "text/html")
-        elif self.path == "/logs" and settings.expose_internal_ui:
+        elif self.path in ("/monitoring", "/logs") and settings.expose_internal_ui:
             self._send(dashboard.PAGE, "text/html")
         elif self.path == "/logs.json" and settings.expose_internal_ui:
-            self._send(json.dumps({"stats": observe.stats(),
-                                   "events": observe.recent(120)}))
+            self._send(json.dumps({
+                "stats": observe.stats(),
+                "events": observe.recent(120),
+                "runtime": {
+                    "status": "operational",
+                    "uptime_seconds": round(time.time() - STARTED_AT),
+                    "sessions": len(SESSIONS),
+                    "model": MODEL,
+                },
+            }))
         elif self.path == "/trace.jsonl" and settings.expose_internal_ui:
             try:
                 self._send(observe.LOGFILE.read_text(), "text/plain")
@@ -239,11 +253,13 @@ class Handler(BaseHTTPRequestHandler):
         convo.add_user(text)
 
         steps = []
+        turn_failed = False
         with observe.timer() as t:
             try:
                 reply = run(convo, work, trace=False, steps=steps,
                             longterm=LONGTERM, extra=note)
             except Exception as e:                  # keep the page alive
+                turn_failed = True
                 observe.log("error", where="chat", error=type(e).__name__)
                 reply = "Something went wrong while processing your request. Please try again."
 
@@ -258,7 +274,7 @@ class Handler(BaseHTTPRequestHandler):
         observe.log("turn", user=text, steps=len(steps), ms=t.ms,
                     actions=len(work.actions) - before,
                     planner=data.get("planner", "react"),
-                    cost=observe.turn_cost(turn_id))
+                    cost=observe.turn_cost(turn_id), error=turn_failed)
         save_sessions()                  # survive a restart
 
         public_steps = steps if settings.expose_internal_ui else []

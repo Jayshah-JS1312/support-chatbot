@@ -23,6 +23,19 @@
 - `knowledge.py` / `embedder.py`: local retrieval pipeline
 - `observe.py`: trace, latency, token, and cost events
 
+## Observability
+
+- `/healthz`: lightweight liveness probe
+- `/readyz`: application readiness and configured model
+- `/metrics`: low-cardinality Prometheus text metrics
+- `/monitoring`: operator dashboard for latency, success rate, tool outcomes,
+  token use, cost, runtime health, and individual traces
+
+The dashboard and raw traces are available only when
+`SUPPORT_CHATBOT_EXPOSE_INTERNAL_UI=true`. They may include customer messages
+and must be protected by authentication and restricted to support operators in
+any public deployment. `/metrics` exposes aggregate values only.
+
 ## Runtime data
 
 Runtime files are intentionally outside the Python package:

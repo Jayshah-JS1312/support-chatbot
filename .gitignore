@@ -6,7 +6,7 @@ __pycache__/
 
 # generated runtime data
 # .cache/ holds the vector index and the embedding model
-# state/  holds sessions.json, trace.jsonl and (stage 2) customers.json
+# state/  holds sessions.json, trace.jsonl and customers.json
 .cache/
 state/
 

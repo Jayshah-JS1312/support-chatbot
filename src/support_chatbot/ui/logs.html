@@ -1,205 +1,59 @@
 <!doctype html>
-<meta charset="utf-8">
-<title>Ami — observability</title>
-<style>
-  :root {
-    --bg:#0f1115; --panel:#171a21; --line:#2a2f3a; --txt:#e6e8ee; --dim:#9aa3b2;
-    --accent:#ff9900;
-    --series-1:#3987e5;     /* magnitude — one hue, validated on this surface */
-    --critical:#d03b3b;     /* reserved status: refusals */
-    --good:#0ca30c;
-  }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--txt);
-         font:14px/1.55 ui-sans-serif, system-ui, -apple-system, sans-serif; }
-  header { padding:14px 22px; border-bottom:1px solid var(--line);
-           display:flex; align-items:center; gap:12px; }
-  header b { color:var(--accent); }
-  header span { color:var(--dim); font-size:12px; }
-  a { color:var(--dim); text-decoration:none; border:1px solid var(--line);
-      border-radius:6px; padding:5px 11px; font-size:12px; }
-  a:hover { border-color:var(--accent); color:var(--txt); }
-  .right { margin-left:auto; display:flex; gap:8px; align-items:center; }
-  main { padding:22px; max-width:1180px; }
-  h2 { font-size:11px; letter-spacing:.09em; text-transform:uppercase;
-       color:var(--dim); margin:26px 0 12px; font-weight:600; }
-  h2:first-child { margin-top:0; }
-
-  /* KPI row — headline numbers are tiles, not a bar chart of one bar each */
-  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(148px,1fr)); gap:12px; }
-  .kpi { background:var(--panel); border:1px solid var(--line);
-         border-radius:9px; padding:13px 15px; }
-  .kpi .v { font-size:27px; font-variant-numeric:tabular-nums; line-height:1.15; }
-  .kpi .k { font-size:11px; color:var(--dim); margin-top:3px; }
-  .kpi .sub { font-size:11px; color:var(--dim); margin-top:5px; }
-  .kpi.alert .v { color:var(--critical); }
-
-  /* tool usage — horizontal bars, sorted high→low */
-  .bars { background:var(--panel); border:1px solid var(--line);
-          border-radius:9px; padding:15px 17px; }
-  .bar { display:grid; grid-template-columns:132px 1fr 92px;
-         align-items:center; gap:12px; margin-bottom:9px; }
-  .bar:last-child { margin-bottom:0; }
-  .bar .name { font-size:12px; color:var(--dim); text-align:right;
-               font-family:ui-monospace, Menlo, monospace; }
-  .track { height:17px; display:flex; gap:2px; }   /* 2px surface gap between fills */
-  .fill { border-radius:0 4px 4px 0; }             /* 4px rounded data-end */
-  .fill.ok { background:var(--series-1); }
-  .fill.err { background:var(--critical); border-radius:0 4px 4px 0; }
-  .fill.ok:not(:only-child) { border-radius:0; }
-  .bar .n { font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; }
-  .bar .n b { color:var(--txt); }
-  .legend { display:flex; gap:16px; margin-bottom:13px; font-size:11px; color:var(--dim); }
-  .legend i { display:inline-block; width:9px; height:9px; border-radius:2px;
-              margin-right:5px; vertical-align:baseline; }
-
-  /* event log */
-  table { width:100%; border-collapse:collapse; background:var(--panel);
-          border:1px solid var(--line); border-radius:9px; overflow:hidden; }
-  th { text-align:left; font-size:10px; letter-spacing:.08em; text-transform:uppercase;
-       color:var(--dim); font-weight:600; padding:9px 12px;
-       border-bottom:1px solid var(--line); }
-  td { padding:7px 12px; white-space:nowrap; border-bottom:1px solid #20242e; font-size:12.5px;
-       font-family:ui-monospace, Menlo, monospace; vertical-align:top; }
-  tr:last-child td { border-bottom:none; }
-  .tag { font-size:10px; padding:2px 7px; border-radius:4px; letter-spacing:.05em;
-         text-transform:uppercase; border:1px solid var(--line); color:var(--dim); }
-  .tag.llm { color:var(--series-1); border-color:#245488; }
-  .tag.tool { color:var(--txt); }
-  .tag.turn { color:var(--accent); border-color:#5b4a1f; }
-  .tag.policy { color:#f0b429; border-color:#5b4a1f; }
-  .tag.retrieval { color:#a78bfa; border-color:#4c3a8a; }
-  td.ms { color:var(--dim); font-variant-numeric:tabular-nums; text-align:right; }
-  td.cost { color:var(--dim); font-variant-numeric:tabular-nums; text-align:right; }
-  td.cost b { color:var(--txt); }
-  td.det { color:var(--dim); white-space:pre-wrap; word-break:break-word; }
-  td.det .bad { color:var(--critical); }
-  td.det .okmark { color:var(--good); }
-  .empty { color:var(--dim); font-style:italic; padding:18px; }
-</style>
-
-<header>
-  <b>Ami</b><span>observability</span>
-  <div class="right">
-    <span id="auto">auto-refresh 5s</span>
-    <a href="/">&larr; back to chat</a>
-    <a href="/trace.jsonl">raw trace.jsonl</a>
-  </div>
-</header>
-
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Ami · Monitoring</title>
+  <style>
+    :root { --bg:#080c12;--panel:#101720;--raised:#16202c;--line:#263548;--text:#f2f5fa;
+      --muted:#98a8bc;--accent:#ffb020;--blue:#68adff;--green:#51d890;--red:#ff7373;--purple:#b99aff; }
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);
+      font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+    a,button,select{font:inherit} a:focus-visible,button:focus-visible,select:focus-visible{outline:3px solid rgba(255,176,32,.35);outline-offset:2px}
+    header{position:sticky;top:0;z-index:4;display:flex;align-items:center;gap:12px;min-height:68px;
+      padding:12px clamp(16px,3vw,34px);border-bottom:1px solid var(--line);background:rgba(8,12,18,.9);backdrop-filter:blur(14px)}
+    .mark{display:grid;place-items:center;width:36px;height:36px;border-radius:11px;background:var(--accent);color:#1c1305;font-weight:800}
+    .title strong{display:block}.title span{color:var(--muted);font-size:11px}.head-actions{margin-left:auto;display:flex;gap:8px;align-items:center}
+    .status{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}.status i{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 4px rgba(81,216,144,.1)}
+    .status.error i{background:var(--red)} a{color:var(--text);text-decoration:none;padding:8px 11px;border:1px solid var(--line);border-radius:9px;background:var(--panel)}a:hover{border-color:#3a4e69}
+    main{max-width:1380px;margin:auto;padding:28px clamp(16px,3vw,34px) 50px}.intro{display:flex;justify-content:space-between;gap:20px;align-items:end;margin-bottom:22px}
+    h1{margin:0;font-size:28px;letter-spacing:-.035em}.intro p{margin:5px 0 0;color:var(--muted)}.runtime{text-align:right;color:var(--muted);font-size:12px}
+    .runtime strong{display:block;color:var(--text);font-size:14px}.kpis{display:grid;grid-template-columns:repeat(6,minmax(135px,1fr));gap:10px}
+    .kpi{min-height:110px;padding:15px;border:1px solid var(--line);border-radius:13px;background:linear-gradient(150deg,var(--panel),#0d131c)}
+    .kpi .label{color:var(--muted);font-size:10px;letter-spacing:.08em;text-transform:uppercase}.kpi .value{margin:9px 0 4px;font-size:25px;line-height:1;font-weight:650;font-variant-numeric:tabular-nums}.kpi .sub{color:var(--muted);font-size:11px}.kpi.warn .value{color:var(--red)}
+    .grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(300px,.9fr);gap:14px;margin-top:14px}.card{border:1px solid var(--line);border-radius:14px;background:var(--panel);overflow:hidden}
+    .card-head{display:flex;align-items:center;justify-content:space-between;padding:15px 17px;border-bottom:1px solid var(--line)}.card-head h2{margin:0;font-size:13px}.card-head span{color:var(--muted);font-size:11px}.bars{padding:17px}
+    .bar{display:grid;grid-template-columns:130px 1fr 68px;gap:11px;align-items:center;margin-bottom:12px}.bar:last-child{margin-bottom:0}.bar-name{color:var(--muted);text-align:right;font:11px ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis}.track{height:10px;background:#0a0f16;border-radius:99px;overflow:hidden;display:flex}.fill-ok{background:var(--blue)}.fill-error{background:var(--red)}.bar-value{font-size:11px;font-variant-numeric:tabular-nums}
+    .health-list{padding:7px 17px}.health-row{display:flex;justify-content:space-between;gap:16px;padding:11px 0;border-bottom:1px solid #202c3b}.health-row:last-child{border-bottom:0}.health-row span{color:var(--muted)}.good{color:var(--green)!important}.event-card{margin-top:14px}.event-tools{display:flex;gap:8px;align-items:center}.event-tools select{height:34px;color:var(--text);background:var(--raised);border:1px solid var(--line);border-radius:8px;padding:0 9px}
+    .table-wrap{overflow:auto;max-height:520px}table{width:100%;border-collapse:collapse}th{position:sticky;top:0;z-index:1;padding:9px 12px;background:#121a25;color:var(--muted);font-size:9px;letter-spacing:.09em;text-transform:uppercase;text-align:left}td{padding:9px 12px;border-top:1px solid #202c3b;vertical-align:top;font-size:11px;white-space:nowrap;font-variant-numeric:tabular-nums}td.detail{min-width:390px;color:var(--muted);white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,monospace}.tag{display:inline-block;padding:2px 7px;border:1px solid var(--line);border-radius:99px;font-size:9px;text-transform:uppercase;letter-spacing:.07em}.tag.llm{color:var(--blue)}.tag.turn{color:var(--accent)}.tag.policy{color:var(--purple)}.tag.error{color:var(--red)}.tag.retrieval{color:var(--purple)}.ok{color:var(--green)}.bad{color:var(--red)}.empty{padding:24px;color:var(--muted);text-align:center}
+    @media(max-width:1100px){.kpis{grid-template-columns:repeat(3,1fr)}}@media(max-width:760px){.head-actions .status{display:none}.intro{display:block}.runtime{text-align:left;margin-top:12px}.kpis{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}.bar{grid-template-columns:95px 1fr 48px}.event-card .card-head{align-items:flex-start;gap:8px;flex-direction:column}}
+  </style>
+</head>
+<body>
+<header><div class="mark">A</div><div class="title"><strong>Ami Operations</strong><span>Agent observability console</span></div><div class="head-actions"><div class="status" id="connection"><i></i><span>Live · refreshes every 5s</span></div><a href="/metrics">Metrics</a><a href="/">Back to chat</a></div></header>
 <main>
-  <h2>Right now</h2>
-  <div class="kpis" id="kpis"></div>
-
-  <h2>Tool usage</h2>
-  <div class="bars" id="bars"></div>
-
-  <h2>Requests — newest first</h2>
-  <table>
-    <thead><tr>
-      <th style="width:70px">time</th><th style="width:62px">kind</th>
-      <th style="width:66px">session</th><th style="width:62px">turn</th>
-      <th>detail</th><th style="width:68px;text-align:right">ms</th>
-      <th style="width:82px;text-align:right">cost</th>
-    </tr></thead>
-    <tbody id="rows"></tbody>
-  </table>
+  <div class="intro"><div><h1>Service overview</h1><p>Latency, quality signals, model usage, cost, and tool execution in one place.</p></div><div class="runtime"><strong id="runtimeStatus">Connecting…</strong><span id="runtimeMeta">Waiting for service data</span></div></div>
+  <section class="kpis" id="kpis" aria-label="Key performance indicators"></section>
+  <div class="grid">
+    <section class="card"><div class="card-head"><h2>Tool execution</h2><span>completed vs refused</span></div><div class="bars" id="bars"></div></section>
+    <section class="card"><div class="card-head"><h2>Runtime health</h2><span>current process</span></div><div class="health-list" id="health"></div></section>
+  </div>
+  <section class="card event-card"><div class="card-head"><div><h2>Recent activity</h2><span>Newest events first; sensitive production access should be authenticated.</span></div><div class="event-tools"><select id="kindFilter" aria-label="Filter event type"><option value="">All events</option><option>turn</option><option>llm</option><option>tool</option><option>policy</option><option>retrieval</option><option>error</option></select><a href="/trace.jsonl">Raw trace</a></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Time</th><th>Type</th><th>Session</th><th>Turn</th><th>Detail</th><th>Latency</th><th>Cost</th></tr></thead><tbody id="rows"></tbody></table></div>
+  </section>
 </main>
-
 <script>
-const $ = id => document.getElementById(id);
-const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-// Costs here are fractions of a cent; the usual 2dp would render every row $0.00.
-const usd = n => n >= 1 ? '$' + n.toFixed(2)
-               : n >= 0.01 ? '$' + n.toFixed(3)
-               : '$' + n.toFixed(5);
-
-function kpi(value, label, sub, alert) {
-  return '<div class="kpi' + (alert ? ' alert' : '') + '">' +
-         '<div class="v">' + esc(value) + '</div>' +
-         '<div class="k">' + esc(label) + '</div>' +
-         (sub ? '<div class="sub">' + esc(sub) + '</div>' : '') + '</div>';
-}
-
-function drawKpis(s) {
-  $('kpis').innerHTML =
-    kpi(s.turns, 'turns', s.steps_per_turn + ' tool steps / turn') +
-    kpi(s.llm_calls, 'model calls',
-        s.tokens_in.toLocaleString() + ' in / ' + s.tokens_out.toLocaleString() + ' out') +
-    kpi(usd(s.cost), 'spend', usd(s.cost_per_turn) + ' per turn') +
-    kpi(s.tool_calls, 'tool calls', s.tool_errors + ' refused') +
-    kpi(s.error_rate + '%', 'refusal rate', 'guardrails firing', s.error_rate > 40) +
-    kpi(s.turn_p50_ms + 'ms', 'turn p50', 'p95 ' + s.turn_p95_ms + 'ms') +
-    kpi(s.llm_p50_ms + 'ms', 'model p50', 'per call');
-}
-
-function drawBars(s) {
-  const box = $('bars');
-  if (!s.by_tool.length) { box.innerHTML = '<div class="empty">No tools called yet.</div>'; return; }
-  const max = Math.max(...s.by_tool.map(t => t.calls));
-  let html = '<div class="legend">' +
-    '<span><i style="background:var(--series-1)"></i>completed</span>' +
-    '<span><i style="background:var(--critical)"></i>refused by a guardrail</span></div>';
-  for (const t of s.by_tool) {
-    const okN = t.calls - t.errors;
-    const pct = n => (n / max * 100) + '%';
-    html += '<div class="bar"><div class="name">' + esc(t.tool) + '</div>' +
-      '<div class="track">' +
-        (okN ? '<div class="fill ok" style="width:' + pct(okN) + '"></div>' : '') +
-        (t.errors ? '<div class="fill err" style="width:' + pct(t.errors) + '"></div>' : '') +
-      '</div>' +
-      '<div class="n"><b>' + t.calls + '</b>' +
-        (t.errors ? ' · ' + t.errors + ' refused' : '') + '</div></div>';
-  }
-  box.innerHTML = html;
-}
-
-function detail(e) {
-  if (e.kind === 'llm') {
-    if (e.error) return '<span class="bad">' + esc(e.error) + '</span>';
-    return esc(e.served_by || '') + '  ·  ' + e.messages + ' msgs in, ' +
-           e.tokens + ' tokens, ' +
-           (e.tool_calls ? e.tool_calls + ' tool call(s) requested' : 'answered');
-  }
-  if (e.kind === 'tool') {
-    const args = esc(JSON.stringify(e.args || {}));
-    return '<b>' + esc(e.tool) + '</b>' + args + (e.ok
-      ? ' <span class="okmark">ok</span>'
-      : '\n<span class="bad">' + esc(e.error) +
-        (e.retryable ? '  [retryable]' : '  [policy]') + '</span>');
-  }
-  if (e.kind === 'policy') {
-    return '<b>' + esc(e.rule) + '</b>  at ' + esc(e.stage) +
-      (e.tool ? '  ·  ' + esc(e.tool) : '') + (e.ident ? '  ·  ' + esc(e.ident) : '') +
-      (e.ticket ? '  ·  ' + esc(e.ticket) : '');
-  }
-  if (e.kind === 'retrieval') {
-    return '“' + esc(e.question) + '”  →  ' +
-      (e.hits || []).map(h => esc(h.heading) + ' (' + h.score + ')').join(', ');
-  }
-  return esc(e.user || '') + (e.steps ? '  →  ' + e.steps + ' tool step(s)' : '') +
-         (e.planner ? '  [' + esc(e.planner) + ']' : '');
-}
-
-async function refresh() {
-  const d = await (await fetch('/logs.json')).json();
-  drawKpis(d.stats);
-  drawBars(d.stats);
-  const rows = $('rows');
-  if (!d.events.length) {
-    rows.innerHTML = '<tr><td colspan="7" class="empty">Nothing logged yet. ' +
-                     'Talk to the agent, then come back.</td></tr>';
-    return;
-  }
-  rows.innerHTML = d.events.map(e =>
-    '<tr><td>' + new Date(e.ts * 1000).toLocaleTimeString('en-GB', {hour12:false}) + '</td>' +
-    '<td><span class="tag ' + e.kind + '">' + e.kind + '</span></td>' +
-    '<td>' + esc(e.session) + '</td><td>' + esc(e.turn) + '</td>' +
-    '<td class="det">' + detail(e) + '</td>' +
-    '<td class="ms">' + (e.ms ?? '') + '</td>' +
-    '<td class="cost">' + (e.cost ? '<b>' + usd(e.cost) + '</b>' : '') + '</td></tr>').join('');
-}
-
-refresh();
-setInterval(refresh, 5000);
+const $=id=>document.getElementById(id),esc=value=>String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');let events=[];
+const usd=n=>n>=1?'$'+n.toFixed(2):n>=.01?'$'+n.toFixed(3):'$'+n.toFixed(5),duration=s=>{const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h?h+'h '+m+'m':m?m+'m':s+'s'};
+function kpi(label,value,sub,warn=false){return `<article class="kpi${warn?' warn':''}"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="sub">${esc(sub)}</div></article>`}
+function drawKpis(s){$('kpis').innerHTML=kpi('Successful turns',s.success_rate+'%',s.turns+' completed',s.success_rate<95)+kpi('Turn latency',s.turn_p50_ms+'ms','p95 '+s.turn_p95_ms+'ms',s.turn_p95_ms>5000)+kpi('Model calls',s.llm_calls,s.tokens.toLocaleString()+' tokens')+kpi('Estimated spend',usd(s.cost),usd(s.cost_per_turn)+' / turn')+kpi('Tool calls',s.tool_calls,s.tool_errors+' refused',s.tool_errors>0)+kpi('Runtime errors',s.runtime_errors,'recent trace window',s.runtime_errors>0)}
+function drawBars(s){if(!s.by_tool.length){$('bars').innerHTML='<div class="empty">Tool activity will appear after the first support request.</div>';return}const max=Math.max(...s.by_tool.map(t=>t.calls));$('bars').innerHTML=s.by_tool.map(t=>{const ok=t.calls-t.errors;return `<div class="bar"><div class="bar-name">${esc(t.tool)}</div><div class="track"><div class="fill-ok" style="width:${ok/max*100}%"></div><div class="fill-error" style="width:${t.errors/max*100}%"></div></div><div class="bar-value">${t.calls} calls</div></div>`}).join('')}
+function drawHealth(data){const s=data.stats,r=data.runtime,last=s.last_event_at?new Date(s.last_event_at*1000).toLocaleTimeString():'No events yet';$('runtimeStatus').textContent=r.status==='operational'?'All systems operational':r.status;$('runtimeMeta').textContent=`${r.model} · ${r.sessions} active session${r.sessions===1?'':'s'}`;$('health').innerHTML=`<div class="health-row"><span>Application</span><b class="good">Operational</b></div><div class="health-row"><span>Uptime</span><b>${duration(r.uptime_seconds)}</b></div><div class="health-row"><span>Active sessions</span><b>${r.sessions}</b></div><div class="health-row"><span>Last event</span><b>${last}</b></div><div class="health-row"><span>Model</span><b>${esc(r.model)}</b></div>`}
+function detail(e){if(e.kind==='llm')return e.error?`<span class="bad">${esc(e.error)}</span>`:`${esc(e.served_by||'model')} · ${e.tokens||0} tokens · ${e.tool_calls||0} tool requests`;if(e.kind==='tool')return `<b>${esc(e.tool)}</b> ${esc(JSON.stringify(e.args||{}))} ${e.ok?'<span class="ok">completed</span>':'<span class="bad">'+esc(e.error)+'</span>'}`;if(e.kind==='policy')return `<b>${esc(e.rule)}</b> · ${esc(e.stage)}`;if(e.kind==='retrieval')return `${esc(e.question)} → ${(e.hits||[]).map(h=>esc(h.heading)).join(', ')}`;if(e.kind==='error')return `<span class="bad">${esc(e.where)} · ${esc(e.error)}</span>`;return `${esc(e.user||'')} ${e.steps?'→ '+e.steps+' steps':''}`}
+function drawEvents(){const kind=$('kindFilter').value,visible=kind?events.filter(e=>e.kind===kind):events;$('rows').innerHTML=visible.length?visible.map(e=>`<tr><td>${new Date(e.ts*1000).toLocaleTimeString()}</td><td><span class="tag ${esc(e.kind)}">${esc(e.kind)}</span></td><td>${esc(e.session)}</td><td>${esc(e.turn)}</td><td class="detail">${detail(e)}</td><td>${e.ms!=null?esc(e.ms)+'ms':''}</td><td>${e.cost?usd(e.cost):''}</td></tr>`).join(''):'<tr><td colspan="7" class="empty">No events match this filter.</td></tr>'}
+async function refresh(){try{const response=await fetch('/logs.json',{cache:'no-store'});if(!response.ok)throw new Error();const data=await response.json();events=data.events;drawKpis(data.stats);drawBars(data.stats);drawHealth(data);drawEvents();$('connection').classList.remove('error');$('connection').querySelector('span').textContent='Live · refreshed '+new Date().toLocaleTimeString()}catch(error){$('connection').classList.add('error');$('connection').querySelector('span').textContent='Dashboard disconnected'}}
+$('kindFilter').addEventListener('change',drawEvents);refresh();setInterval(refresh,5000);
 </script>
+</body>
+</html>
