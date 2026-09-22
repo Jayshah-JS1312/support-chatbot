@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "support-chatbot"
+version = "0.1.0"
+description = "Policy-controlled, tool-using customer support chatbot"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "chromadb>=0.5,<2",
+  "numpy>=1.26,<3",
+  "onnxruntime>=1.18,<2",
+  "openai>=1.0,<3",
+  "python-dotenv>=1.0,<2",
+  "tokenizers>=0.19,<1",
+]
+
+[project.optional-dependencies]
+dev = ["build>=1,<2", "pytest>=8,<9"]
+
+[project.scripts]
+support-chatbot = "support_chatbot.cli:main"
+support-chatbot-web = "support_chatbot.web:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+support_chatbot = ["ui/*.html", "knowledge/**/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

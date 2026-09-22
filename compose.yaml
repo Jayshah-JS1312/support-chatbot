@@ -1,0 +1,19 @@
+name: support-chatbot
+
+services:
+  app:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      SUPPORT_CHATBOT_EXPOSE_INTERNAL_UI: "false"
+      SUPPORT_CHATBOT_SECURE_COOKIES: "false"
+    ports:
+      - "8000:8000"
+    volumes:
+      - support-chatbot-data:/data
+    restart: unless-stopped
+
+volumes:
+  support-chatbot-data:

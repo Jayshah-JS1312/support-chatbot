@@ -1,14 +1,17 @@
 .venv/
 __pycache__/
+*.py[cod]
 .env
+:memory:.ses
 
-# generated — each stage rebuilds these on first run; delete freely
+# generated runtime data
 # .cache/ holds the vector index and the embedding model
 # state/  holds sessions.json, trace.jsonl and (stage 2) customers.json
 .cache/
 state/
 
-# what evals.py and golden.py write by default
-# (the other files in results/ are sample runs, and are committed)
-eval_results.json
-golden_results.json
+artifacts/
+*.bak
+build/
+dist/
+*.egg-info/

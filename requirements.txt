@@ -1,6 +1,1 @@
-# Retrieval needs a vector database. chromadb brings onnxruntime,
-# tokenizers and numpy with it, which is why the local embedding model in
-# embedder.py costs no extra dependency.
-openai
-python-dotenv
-chromadb
+-e .

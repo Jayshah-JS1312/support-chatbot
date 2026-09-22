@@ -1,0 +1,10 @@
+.git
+.github
+.venv
+.cache
+state
+artifacts
+__pycache__
+*.py[cod]
+.env
+:memory:.ses
