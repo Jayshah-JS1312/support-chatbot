@@ -2,14 +2,15 @@
 
 ## Request flow
 
-1. `web.py` or `cli.py` accepts a customer message.
+1. A FastAPI customer route or `cli.py` accepts a customer message.
 2. `policy.check_input` removes card-like data and marks suspected instruction override attempts.
 3. The selected planner receives conversation, working, and customer memory.
 4. The model can request only tools declared in `tools.SCHEMAS`.
 5. `policy.guarded_run` enforces cross-turn confirmation and escalation rules.
 6. Tool results update working memory and are returned to the planner.
 7. `policy.check_output` removes identifiers that lack a trusted source.
-8. The response, memory, and trace are persisted.
+8. The sanitized response—not the raw model response—memory, and trace are
+   persisted.
 
 ## Boundaries
 
@@ -22,6 +23,17 @@
 - `memory.py`: conversation, working, and customer memory
 - `knowledge.py` / `embedder.py`: local retrieval pipeline
 - `observe.py`: trace, latency, token, and cost events
+- `api/app.py`: FastAPI factory, request limits, and structured errors
+- `api/runtime.py`: process-local sessions, persistence, and shared locks
+- `api/routes/customer.py`: chat, browser session, reset, and feedback routes
+- `api/routes/authentication.py`: reserved authentication boundary
+- `api/routes/admin.py`: internal operator pages, events, and raw traces
+- `api/routes/workflow_callbacks.py`: reserved asynchronous callback boundary
+- `api/routes/observability.py`: health, readiness, metrics, and retrieval evals
+
+The `support-chatbot-web` command serves `support_chatbot.web:app` through
+Uvicorn. Authentication and workflow callback routers are intentionally empty
+until their security, idempotency, and durable-state contracts are implemented.
 
 ## Observability
 

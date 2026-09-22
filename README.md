@@ -17,6 +17,7 @@ baseline.
 - A local ChromaDB knowledge index using `bge-micro-v2`
 - Browser and terminal interfaces
 - Responsive customer chat UI with built-in demo prompts
+- FastAPI application served by Uvicorn with validated request schemas
 - Operations dashboard plus health, readiness, and Prometheus metrics endpoints
 - Deterministic retrieval-evaluation dashboard with versioned test cases
 - Deterministic unit tests and opt-in live LLM evaluations
@@ -51,6 +52,10 @@ Set `OPENAI_API_KEY` in `.env`, then run either interface:
 support-chatbot-web
 support-chatbot
 ```
+
+`support-chatbot-web` starts the FastAPI application through Uvicorn. For
+development tooling that expects an ASGI import string, use
+`uvicorn support_chatbot.web:app --host 127.0.0.1 --port 8000`.
 
 The browser UI is available at <http://127.0.0.1:8000>. When internal views are
 enabled, the monitoring console is at <http://127.0.0.1:8000/monitoring>.
@@ -92,7 +97,8 @@ and [security](SECURITY.md) before exposing the service beyond localhost.
 
 ## Current production boundary
 
-The repository now has a deployable package and container foundation, but the
-application is not yet ready for real customer traffic. Authentication,
+The repository now has a deployable FastAPI/Uvicorn container foundation, but
+the application is not yet ready for real customer traffic. Authentication,
 authorization, a durable transactional order backend, encrypted customer data,
-rate limiting, and a production HTTP/application server remain mandatory work.
+rate limiting, TLS/reverse-proxy configuration, and multi-process durable state
+remain mandatory work.

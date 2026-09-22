@@ -8,7 +8,9 @@ pytest
 
 These tests never call the model provider or download the embedding model.
 They cover store transitions, tool contracts, memory persistence, planning,
-policy enforcement, pricing, observability, and knowledge-document chunking.
+policy enforcement, pricing, observability, knowledge-document chunking, and
+FastAPI HTTP contracts. HTTP tests use an isolated temporary runtime and fake
+planner, so they make no model or network calls.
 
 Fixtures isolate mutable state:
 

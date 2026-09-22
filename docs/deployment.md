@@ -7,10 +7,10 @@
 3. Verify `GET /healthz` returns `{"status":"ok"}` and `GET /readyz`
    reports `ready`.
 
-The container runs as an unprivileged user and persists runtime state beneath
-`/data`. The Compose configuration enables the monitoring console for the
-local demo. Disable it before a public deployment unless the route is protected
-by operator authentication.
+The container runs the FastAPI application with Uvicorn as an unprivileged user
+and persists runtime state beneath `/data`. The Compose configuration enables
+the monitoring console for the local demo. Disable it before a public
+deployment unless the route is protected by operator authentication.
 
 ## Environment
 
@@ -44,7 +44,7 @@ internet-facing release must first add:
 
 - authenticated users and server-side authorization for every order
 - a durable transactional database and idempotency keys for mutations
-- a production ASGI/WSGI server behind TLS
+- a managed reverse proxy/load balancer with TLS in front of Uvicorn
 - distributed rate limiting and abuse protection
 - encrypted state, retention/deletion controls, and secret management
 - authenticated operator-only diagnostics

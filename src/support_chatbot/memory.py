@@ -56,6 +56,21 @@ class ConversationMemory:
             "content": json.dumps(result),
         })
 
+    def persist_safe_reply(self, raw_reply, safe_reply):
+        """Make the customer-safe reply the only persisted final response.
+
+        Planners append their final model response before the output policy has
+        inspected it. Replace that exact terminal response after sanitization;
+        if a planner failed or exhausted its steps without appending a reply,
+        append the safe fallback instead.
+        """
+        if self.history and self.history[-1].get("role") == "assistant" \
+                and self.history[-1].get("content") == raw_reply \
+                and not self.history[-1].get("tool_calls"):
+            self.history[-1] = {"role": "assistant", "content": safe_reply}
+            return
+        self.history.append({"role": "assistant", "content": safe_reply})
+
     def messages(self, extra_system=None):
         """What we actually send. `extra_system` is where working memory rides in."""
         head = [{"role": "system", "content": self.system}]
