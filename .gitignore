@@ -1,8 +1,23 @@
+# Python environments, bytecode, and local test/tool caches
 .venv/
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local credentials and environment overrides
 .env
-:memory:.ses
+.env.*
+!.env.example
+
+# Editor, OS, and terminal-session artifacts
+.DS_Store
+*.swp
+*~
+*.ses
 
 # generated runtime data
 # .cache/ holds the vector index and the embedding model

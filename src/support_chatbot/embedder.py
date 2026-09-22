@@ -29,9 +29,17 @@ Four steps, all visible below:
     4. normalize  scale it to length 1, so comparing two is a dot product
 """
 
+import os
 import urllib.request
 
 import numpy as np
+
+# ONNX Runtime's optional platform telemetry creates a ``:memory:.ses`` file
+# in the process working directory on macOS.  The chatbot does not use that
+# telemetry, so disable it before importing onnxruntime rather than hiding a
+# recurring runtime artifact with .gitignore alone.
+os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
+
 import onnxruntime
 from tokenizers import Tokenizer
 from support_chatbot import CACHE_DIR

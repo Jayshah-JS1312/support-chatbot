@@ -75,6 +75,9 @@ python -m evaluations.golden
 `evaluations/` calls the configured model provider, can incur cost, and is
 therefore intentionally excluded from default CI.
 
+The pre-migration retrieval measurements are recorded in
+[`docs/baselines/retrieval-evaluation.md`](docs/baselines/retrieval-evaluation.md).
+
 ## Deployment
 
 ```bash

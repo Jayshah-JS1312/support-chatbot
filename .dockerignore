@@ -5,6 +5,15 @@
 state
 artifacts
 __pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
 *.py[cod]
-.env
-:memory:.ses
+.env*
+.DS_Store
+*.swp
+*~
+*.ses
+build
+dist
+*.egg-info
