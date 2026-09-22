@@ -1,0 +1,16 @@
+[
+  {"id":"return-window","question":"How long do I have to return something?","expected":["Returns"],"category":"policies"},
+  {"id":"return-process","question":"How do I actually send a return back?","expected":["Returns — How a return works"],"category":"policies"},
+  {"id":"gift-card-return","question":"Can I return a gift card I bought by mistake?","expected":["Returns — Items that cannot be returned"],"category":"policies"},
+  {"id":"missing-package","question":"Tracking says my package was delivered but I don't have it.","expected":["Shipping and delivery — Late or missing packages"],"category":"policies"},
+  {"id":"tracking-stalled","question":"My tracking hasn't updated in a week. What happens now?","expected":["Shipping and delivery — Late or missing packages"],"category":"policies"},
+  {"id":"damaged-arrival","question":"What happens if my package arrives damaged?","expected":["Shipping and delivery — Damaged on arrival"],"category":"policies"},
+  {"id":"cancel-window","question":"Up to what point can I cancel an order?","expected":["Cancellations"],"category":"policies"},
+  {"id":"address-change","question":"Can you change the delivery address after I ordered?","expected":["Account and payment safety — Verification"],"category":"policies"},
+  {"id":"late-return","question":"It's been 45 days since delivery. Can I still return it?","expected":["Returns — Outside the 30-day window"],"category":"policies"},
+  {"id":"chargeback","question":"I already called my bank to dispute the charge. Can you refund me too?","expected":["regulations/refunds-and-chargebacks.md"],"category":"regulations"},
+  {"id":"gift-card-expiry","question":"Does the balance on my gift card expire?","expected":["regulations/gift-cards.md"],"category":"regulations"},
+  {"id":"privacy-delete","question":"I want you to delete all the personal data you hold about me.","expected":["regulations/privacy.md"],"category":"regulations"},
+  {"id":"second-refund","question":"The first refund was short. Issue another refund for the same order.","expected":["rules/authority.md","regulations/refunds-and-chargebacks.md"],"category":"rules"},
+  {"id":"upset-customer","question":"This is the third time this has gone wrong. I am completely done with you people.","expected":["tone/upset.md"],"category":"tone"}
+]

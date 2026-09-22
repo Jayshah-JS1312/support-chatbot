@@ -18,6 +18,7 @@ baseline.
 - Browser and terminal interfaces
 - Responsive customer chat UI with built-in demo prompts
 - Operations dashboard plus health, readiness, and Prometheus metrics endpoints
+- Deterministic retrieval-evaluation dashboard with versioned test cases
 - Deterministic unit tests and opt-in live LLM evaluations
 
 The commerce backend is still a local simulator. Connecting authenticated,
@@ -53,6 +54,7 @@ support-chatbot
 
 The browser UI is available at <http://127.0.0.1:8000>. When internal views are
 enabled, the monitoring console is at <http://127.0.0.1:8000/monitoring>.
+The retrieval evaluation dashboard is at <http://127.0.0.1:8000/evals>.
 Internal traces can contain customer text, so put that route behind operator
 authentication in production.
 

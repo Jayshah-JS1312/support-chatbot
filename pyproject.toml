@@ -32,7 +32,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-support_chatbot = ["ui/*.html", "knowledge/**/*.md"]
+support_chatbot = ["ui/*.html", "knowledge/**/*.md", "evaluation/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

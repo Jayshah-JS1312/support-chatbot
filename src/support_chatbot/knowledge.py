@@ -153,7 +153,7 @@ def collection():
 # 4. search
 # --------------------------------------------------------------------------
 
-def search(question, k=3, category=None):
+def search(question, k=3, category=None, log_event=True):
     """The k chunks nearest the question, best first, across everything.
 
     `category` restricts the search to one shelf. The agent is NOT given
@@ -203,8 +203,9 @@ def search(question, k=3, category=None):
                      # everyone actually talks about.
                      "score": round(1 - distance, 3)})
 
-    observe.log("retrieval", question=question, ms=t.ms, category=category,
-                hits=[{"heading": h["heading"], "score": h["score"]} for h in hits])
+    if log_event:
+        observe.log("retrieval", question=question, ms=t.ms, category=category,
+                    hits=[{"heading": h["heading"], "score": h["score"]} for h in hits])
     return hits
 
 

@@ -16,3 +16,4 @@ The page markup lives in ui/logs.html.
 from . import UI_DIR
 
 PAGE = (UI_DIR / "logs.html").read_text()
+EVAL_PAGE = (UI_DIR / "evals.html").read_text()

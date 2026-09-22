@@ -30,11 +30,18 @@
 - `/metrics`: low-cardinality Prometheus text metrics
 - `/monitoring`: operator dashboard for latency, success rate, tool outcomes,
   token use, cost, runtime health, and individual traces
+- `/evals`: deterministic retrieval quality dashboard (Recall@1, Recall@3,
+  category accuracy, ranking quality, and latency)
 
 The dashboard and raw traces are available only when
 `SUPPORT_CHATBOT_EXPOSE_INTERNAL_UI=true`. They may include customer messages
 and must be protected by authentication and restricted to support operators in
 any public deployment. `/metrics` exposes aggregate values only.
+
+The retrieval dashboard reads versioned cases from
+`src/support_chatbot/evaluation/retrieval.json`. It exercises only the local
+embedding and knowledge index, so it does not make paid model calls. Live agent
+behavior evaluations remain opt-in release checks under `evaluations/`.
 
 ## Runtime data
 

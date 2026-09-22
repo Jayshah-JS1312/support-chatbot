@@ -43,6 +43,20 @@ class TestConversationMemoryBasics:
         assert m.history[0]["role"] == "tool"
         assert json.loads(m.history[0]["content"]) == result
 
+    def test_public_transcript_excludes_agent_internals(self):
+        """Page navigation restores dialogue without exposing tool messages."""
+        m = ConversationMemory("system")
+        m.add_user("Where is my order?")
+        m.add_assistant({"role": "assistant", "content": None,
+                         "tool_calls": [{"id": "call-1"}]})
+        m.add_observation("call-1", {"status": "shipped"})
+        m.add_assistant({"role": "assistant", "content": "It has shipped."})
+
+        assert m.public_transcript() == [
+            {"role": "user", "content": "Where is my order?"},
+            {"role": "assistant", "content": "It has shipped."},
+        ]
+
 
 class TestConversationMemoryTrimming:
     """Conversation memory trims from the front but never leaves a tool stranded."""
@@ -316,7 +330,7 @@ class TestConversationMemoryPersistence:
         assert m.max_turns == 40
 
 
-class TestWorkingMemoryStage2:
+class TestWorkingMemoryConfirmation:
     """Confirmation state in WorkingMemory: turn and pending."""
 
     def test_working_memory_has_turn_field(self):

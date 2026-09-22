@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 
 from support_chatbot import agent_profile as profile
 from support_chatbot import dashboard
+from support_chatbot import evals
 from support_chatbot import observe
 from support_chatbot import plan_execute
 from support_chatbot import planner
@@ -116,6 +117,9 @@ def state(session):
     work = session["work"]
     result = {
         "messages": len(session["convo"]),
+        # Only restore customer-visible dialogue. Tool calls, observations,
+        # and planner messages stay in the operator view.
+        "transcript": session["convo"].public_transcript(),
         "orders": len(work.orders),
         # Customer-facing: what the agent actually DID on their account.
         "actions": work.actions,
@@ -174,6 +178,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(PAGE, "text/html")
         elif self.path in ("/monitoring", "/logs") and settings.expose_internal_ui:
             self._send(dashboard.PAGE, "text/html")
+        elif self.path == "/evals" and settings.expose_internal_ui:
+            self._send(dashboard.EVAL_PAGE, "text/html")
+        elif self.path == "/evals.json" and settings.expose_internal_ui:
+            self._send(json.dumps(evals.latest()))
         elif self.path == "/logs.json" and settings.expose_internal_ui:
             self._send(json.dumps({
                 "stats": observe.stats(),
@@ -206,6 +214,11 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._send(json.dumps({"error": "invalid JSON"}), status=400)
             return
+
+        if self.path == "/evals/run" and settings.expose_internal_ui:
+            self._send(json.dumps(evals.run()))
+            return
+
         sid, session = self._session()
 
         if self.path == "/reset":

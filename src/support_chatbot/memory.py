@@ -79,6 +79,20 @@ class ConversationMemory:
     def __len__(self):
         return len(self.history)
 
+    def public_transcript(self):
+        """Return only dialogue that is safe and useful to redraw for a user.
+
+        Planner tool requests and tool observations are part of the model
+        transcript but are operator internals, not customer-visible messages.
+        """
+        return [
+            {"role": message["role"], "content": message["content"]}
+            for message in self.history
+            if message.get("role") in {"user", "assistant"}
+            and isinstance(message.get("content"), str)
+            and message["content"]
+        ]
+
     # -- persistence ------------------------------------------------------
 
     def to_dict(self):
