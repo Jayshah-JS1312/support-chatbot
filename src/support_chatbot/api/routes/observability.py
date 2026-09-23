@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
-from support_chatbot import dashboard, evals, observe
+from support_chatbot import dashboard, evals, hitl_evals, observe
 from support_chatbot.api.dependencies import require_internal_ui, runtime
 from support_chatbot.api.models import ResetRequest
 from support_chatbot.llm import MODEL
@@ -54,3 +54,26 @@ def latest_evaluation():
 def run_evaluation(payload: ResetRequest | None = None):
     del payload
     return evals.run()
+
+
+@evaluation_router.get("/admin/hitl-evals", response_class=HTMLResponse)
+def hitl_evaluation_page():
+    return HTMLResponse(dashboard.HITL_EVAL_PAGE)
+
+
+@evaluation_router.get("/admin/hitl-evals.json")
+def latest_hitl_evaluation(request: Request):
+    repository = runtime(request).repository
+    report = repository.latest_hitl_evaluation()
+    return {
+        "report": report or {"status": "not_run", "summary": None, "results": []},
+        "operations": repository.hitl_operational_metrics(),
+    }
+
+
+@evaluation_router.post("/admin/hitl-evals/run")
+def run_hitl_evaluation(request: Request, payload: ResetRequest | None = None):
+    del payload
+    repository = runtime(request).repository
+    report = repository.save_hitl_evaluation(hitl_evals.run())
+    return {"report": report, "operations": repository.hitl_operational_metrics()}

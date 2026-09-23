@@ -54,6 +54,7 @@ deployment unless the route is protected by operator authentication.
 | `/monitoring` | Operator dashboard | authenticated admin only |
 | `/admin/approvals` | Human approval inbox | authenticated admin only |
 | `/evals` | Retrieval evaluation dashboard | authenticated admin only |
+| `/admin/hitl-evals` | HITL recall, escalation precision, and release gate | authenticated admin only |
 | `/trace.jsonl` | Raw agent events | authenticated admin only |
 | `POST /chat` | Store and enqueue a request; returns `202` | authenticated customer |
 | `GET /requests` | Restore the customer's recent ticket timeline | authenticated owner |

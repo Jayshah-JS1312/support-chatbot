@@ -8,6 +8,7 @@ import pytest
 from support_chatbot.auth import Identity, reset_identity, set_identity
 from support_chatbot.config import settings
 from support_chatbot.persistence import InvalidWorkflowTransition, PostgresRepository
+from support_chatbot import hitl_evals
 from support_chatbot.workflow import system_identity
 
 
@@ -269,4 +270,30 @@ def test_postgres_sealed_action_executes_once_after_both_approvals():
                 "update public.orders set status='preparing',version=1 where order_number='112-3333333-3333333'"
             )
         repository.logout(session_token)
+        repository.close()
+
+
+def test_postgres_persists_hitl_evaluation_and_reports_queue_metrics():
+    repository = PostgresRepository(os.environ.get("DATABASE_URL"))
+    run_id = None
+    admin = Identity(
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "admin@example.com",
+        "Ami Admin", "admin",
+    )
+    identity_token = set_identity(admin)
+    try:
+        saved = repository.save_hitl_evaluation(hitl_evals.run())
+        run_id = saved["run_id"]
+        latest = repository.latest_hitl_evaluation()
+        assert latest["run_id"] == run_id
+        assert latest["summary"]["hitl_recall"] == 100.0
+        assert len(latest["results"]) == len(hitl_evals.load_cases())
+        metrics = repository.hitl_operational_metrics()
+        assert {"decided", "marked_necessary", "pending", "expired",
+                "escalation_precision"} <= metrics.keys()
+    finally:
+        if run_id:
+            with repository.pool.connection() as connection:
+                connection.execute("delete from public.evaluation_runs where id=%s", (run_id,))
+        reset_identity(identity_token)
         repository.close()

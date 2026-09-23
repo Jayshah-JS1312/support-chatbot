@@ -30,7 +30,7 @@ def test_customer_receives_403_on_every_admin_surface():
     with client_for(get_repository()) as client:
         assert login(client).status_code == 200
         for path in ("/admin", "/admin/approvals", "/admin/approvals.json",
-                     "/monitoring", "/evals"):
+                     "/monitoring", "/evals", "/admin/hitl-evals"):
             assert client.get(path).status_code == 403
 
 
@@ -58,6 +58,7 @@ def test_admin_can_open_monitoring_and_evaluations():
             assert client.get("/monitoring").status_code == 200
             assert client.get("/evals").status_code == 200
             assert client.get("/admin/approvals").status_code == 200
+            assert client.get("/admin/hitl-evals").status_code == 200
     finally:
         object.__setattr__(settings, "expose_internal_ui", original)
 

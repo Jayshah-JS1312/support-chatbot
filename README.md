@@ -33,6 +33,8 @@ baseline.
 - Cryptographically sealed cancellation/return proposals with optimistic revalidation
 - Operations dashboard plus health, readiness, and Prometheus metrics endpoints
 - Deterministic retrieval-evaluation dashboard with versioned test cases
+- Admin-only HITL evaluation dashboard with recall, reviewer-labelled precision,
+  false-positive/negative inspection, queue health, and a 100% recall release gate
 - Deterministic unit tests and opt-in live LLM evaluations
 
 The commerce workflows use durable local PostgreSQL records, but they still
@@ -79,6 +81,7 @@ development tooling that expects an ASGI import string, use
 The browser UI is available at <http://127.0.0.1:8000>. When internal views are
 enabled, the monitoring console is at <http://127.0.0.1:8000/monitoring>.
 The retrieval evaluation dashboard is at <http://127.0.0.1:8000/evals>.
+The HITL safety dashboard is at <http://127.0.0.1:8000/admin/hitl-evals>.
 The admin approval inbox is at <http://127.0.0.1:8000/admin/approvals>.
 Internal traces can contain customer text, so put that route behind operator
 authentication in production.
@@ -102,6 +105,7 @@ are also available in [`test-data/chat-scenarios.json`](test-data/chat-scenarios
 
 ```bash
 pytest
+python -m support_chatbot.hitl_evals --check
 python -m evaluations.behavioral --runs 1
 python -m evaluations.golden --audit
 python -m evaluations.golden
@@ -112,6 +116,12 @@ tests run when `DATABASE_URL` is exported and otherwise report as skipped.
 Everything under
 `evaluations/` calls the configured model provider, can incur cost, and is
 therefore intentionally excluded from default CI.
+
+The deterministic HITL command is a release gate: it exits non-zero unless
+every blocking case that requires a human actually pauses. Its dashboard always
+shows recall beside escalation precision. The current `review_all` policy has
+100% recall but intentionally exposes low dataset precision because safe reads
+are also escalated; operational precision comes from real reviewer labels.
 
 The pre-migration retrieval measurements are recorded in
 [`docs/baselines/retrieval-evaluation.md`](docs/baselines/retrieval-evaluation.md).

@@ -634,6 +634,56 @@ class PostgresRepository:
                 a.created_at desc""").fetchall()
         return [self._workflow_request(row) for row in rows]
 
+    def hitl_operational_metrics(self):
+        """Return reviewer-labelled precision and current queue health.
+
+        Precision only uses approvals a human actually decided. Pending and
+        expired work are reported separately because neither contains a human
+        judgment about whether review was necessary.
+        """
+        with self.connection() as conn:
+            row = conn.execute("""select
+                count(*) filter (where status in ('approved','rejected'))::int as decided,
+                count(*) filter (where status in ('approved','rejected')
+                    and review_necessary is true)::int as marked_necessary,
+                count(*) filter (where status in ('approved','rejected')
+                    and review_necessary is null)::int as unlabeled_decisions,
+                count(*) filter (where status='pending')::int as pending,
+                count(*) filter (where status='expired')::int as expired
+                from public.approval_tasks""").fetchone()
+        result = dict(row)
+        result["escalation_precision"] = round(
+            100 * result["marked_necessary"] / result["decided"], 1
+        ) if result["decided"] else None
+        return result
+
+    def save_hitl_evaluation(self, report):
+        with self.connection() as conn:
+            run = conn.execute("""insert into public.evaluation_runs
+                (suite,status,summary,completed_at) values
+                ('hitl_blocking','complete',%s,now()) returning id,started_at,completed_at""",
+                (Jsonb(report["summary"]),)).fetchone()
+            for result in report["results"]:
+                conn.execute("""insert into public.evaluation_results
+                    (evaluation_run_id,case_id,passed,detail) values (%s,%s,%s,%s)""",
+                    (run["id"], result["id"], result["passed"], Jsonb(result)))
+        return {**report, "run_id": str(run["id"]),
+                "generated_at": run["completed_at"].isoformat()}
+
+    def latest_hitl_evaluation(self):
+        with self.connection() as conn:
+            run = conn.execute("""select id,status,summary,completed_at from public.evaluation_runs
+                where suite='hitl_blocking' and status='complete'
+                order by completed_at desc nulls last limit 1""").fetchone()
+            if not run:
+                return None
+            rows = conn.execute("""select detail from public.evaluation_results
+                where evaluation_run_id=%s order by case_id""", (run["id"],)).fetchall()
+        return {"status": run["status"], "suite": "hitl_blocking",
+                "run_id": str(run["id"]),
+                "generated_at": run["completed_at"].isoformat(),
+                "summary": run["summary"], "results": [row["detail"] for row in rows]}
+
     def get_approval_detail(self, request_id):
         with self.connection() as conn:
             row = conn.execute("""select a.id as approval_id,a.status as approval_status,
@@ -1110,6 +1160,7 @@ class InMemoryRepository:
         self.dead_letters = []
         self.action_proposals = {}
         self.audit_events = []
+        self.hitl_evaluation_runs = []
 
     def healthcheck(self): return True
     def _visible(self, owner):
@@ -1354,6 +1405,28 @@ class InMemoryRepository:
     def list_admin_reviewers(self):
         return [{"id": p["id"], "email": p["email"], "display_name": p["display_name"]}
                 for p in self.profiles.values() if p["role"] == "admin"]
+
+    def hitl_operational_metrics(self):
+        rows = list(self.support_requests.values())
+        decided = [row for row in rows if row.get("approval_status") in {"approved", "rejected"}]
+        necessary = [row for row in decided if row.get("review_necessary") is True]
+        return {
+            "decided": len(decided),
+            "marked_necessary": len(necessary),
+            "unlabeled_decisions": sum(row.get("review_necessary") is None for row in decided),
+            "pending": sum(row.get("approval_status") == "pending" for row in rows),
+            "expired": sum(row.get("approval_status") == "expired" for row in rows),
+            "escalation_precision": round(100 * len(necessary) / len(decided), 1) if decided else None,
+        }
+
+    def save_hitl_evaluation(self, report):
+        saved = copy.deepcopy(report)
+        saved["run_id"] = str(uuid.uuid4())
+        self.hitl_evaluation_runs.append(saved)
+        return copy.deepcopy(saved)
+
+    def latest_hitl_evaluation(self):
+        return copy.deepcopy(self.hitl_evaluation_runs[-1]) if self.hitl_evaluation_runs else None
 
     def decide_support_request(self, request_id, approve, reason, admin_user_id,
                                edited_response=None, review_necessary=None):
