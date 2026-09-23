@@ -20,6 +20,8 @@ baseline.
 - FastAPI application served by Uvicorn with validated request schemas
 - PostgreSQL-backed orders, conversations, verified customer memory, and audit data
 - Supabase-compatible versioned migrations with reproducible demo seeds
+- Customer/admin authentication with revocable, rotating server-side sessions
+- PostgreSQL RLS-backed ownership isolation for customer data
 - Operations dashboard plus health, readiness, and Prometheus metrics endpoints
 - Deterministic retrieval-evaluation dashboard with versioned test cases
 - Deterministic unit tests and opt-in live LLM evaluations
@@ -69,6 +71,17 @@ The retrieval evaluation dashboard is at <http://127.0.0.1:8000/evals>.
 Internal traces can contain customer text, so put that route behind operator
 authentication in production.
 
+Local demo sign-in accounts are:
+
+| Role | Email | Password |
+|---|---|---|
+| Customer | `raj@example.com` | `RajDemo!2026` |
+| Customer | `mei@example.com` | `MeiDemo!2026` |
+| Admin | `admin@example.com` | `AdminDemo!2026` |
+
+These credentials are test fixtures only. Replace or remove them before using
+the schema with real customer data.
+
 For demo customers, order numbers, and more than 30 test conversations, see
 [the manual testing guide](docs/manual-testing.md). Machine-readable scenarios
 are also available in [`test-data/chat-scenarios.json`](test-data/chat-scenarios.json).
@@ -105,7 +118,8 @@ and [security](SECURITY.md) before exposing the service beyond localhost.
 
 ## Current production boundary
 
-The repository now has a FastAPI/Uvicorn service and durable PostgreSQL business
-state, but it is not ready for real customer traffic. Authentication,
-authorization, encrypted customer data, rate limiting, TLS/reverse-proxy
-configuration, and the asynchronous human-approval workflow remain mandatory.
+The repository now has a FastAPI/Uvicorn service, durable PostgreSQL business
+state, customer/admin authentication, and ownership isolation. It is not ready
+for real customer traffic until encrypted customer-data operations, rate
+limiting, TLS/reverse-proxy configuration, email-based reset delivery, and the
+asynchronous human-approval workflow are complete.

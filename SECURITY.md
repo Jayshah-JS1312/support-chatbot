@@ -2,9 +2,10 @@
 
 ## Supported posture
 
-This is a production-oriented foundation, not an authorization-complete support
-system. It currently uses simulated commerce data and must not receive real
-customer information.
+This is a production-oriented foundation with tenant authentication and
+authorization controls. It currently uses simulated commerce data and must not
+receive real customer information until the remaining operational controls
+below are addressed.
 
 ## Trust boundaries
 
@@ -24,17 +25,27 @@ customer information.
 - Output identifier provenance checks
 - Request-size limit and non-disclosing HTTP errors
 - `HttpOnly`/`SameSite` session cookies, with opt-in `Secure`
+- Opaque, hashed, expiring, and revocable database-backed sessions
+- Customer/admin role separation with server-controlled role assignment
+- PostgreSQL row-level security and application-level ownership checks
+- One-use, expiring password-reset tokens that revoke existing sessions
+- Tenant ownership on orders, conversations, messages, memory, support
+  requests, drafts, approvals, executions, and audit events
 - Internal traces disabled by default
-- Deterministic tests for tool and policy boundaries
+- Deterministic tests for tool, policy, authentication, and tenant boundaries
 
 ## Known release blockers
 
-- No customer authentication or per-order authorization
 - No durable idempotency or transactional commerce adapter
-- Plaintext local session/customer persistence
 - No distributed rate limiting or concurrency control across processes
+- Password-reset delivery is not connected to an email provider
+- No CSRF token mechanism beyond `SameSite=Lax` cookies; reassess before
+  introducing cross-site browser integrations
+- Demo credentials must be replaced or disabled outside demonstration
+  environments
 - Regex injection detection is defense-in-depth, not a security boundary
-- The built-in HTTP server is not a production application server
+- Deployment still requires managed secret rotation, TLS termination, backups,
+  recovery drills, and security monitoring
 
 ## Reporting
 

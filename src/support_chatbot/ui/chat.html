@@ -196,6 +196,7 @@
           <select id="planner" class="planner" title="Planning strategy"><option value="react">Adaptive reasoning</option><option value="plan">Plan then execute</option></select>
         </label>
         <button class="secondary" type="button" onclick="resetConversation()">New conversation</button>
+        <button class="secondary" type="button" onclick="logout()">Logout</button>
       </div>
     </header>
     <div id="activity" aria-live="polite"></div>
@@ -252,6 +253,8 @@ $('messageInput').addEventListener('input',event=>{event.target.style.height='au
 document.querySelectorAll('[data-prompt]').forEach(button=>button.addEventListener('click',()=>{document.body.classList.remove('menu-open');sendMessage(button.dataset.prompt)}));
 async function resetConversation(){if(sending)return;const response=await fetch('/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),data=await response.json();$('chat').innerHTML='';$('activity').innerHTML='';lastAgentResponse='';addMessage('ami',GREETING);draw({...data,steps:[]})}
 async function submitFeedback(){const corrected=$('fbCorrected').value.trim(),status=$('feedbackStatus');if(!lastAgentResponse||!corrected){status.textContent='Chat first, then provide the corrected answer.';return}const response=await fetch('/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({original_response:lastAgentResponse,corrected_response:corrected,reason:$('fbReason').value.trim(),golden_row_id:null})}),data=await response.json();status.textContent=data.ok?'Correction saved. Thank you.':(data.message||'Could not save feedback.');if(data.ok){$('fbCorrected').value='';$('fbReason').value=''}}
+async function logout(){await fetch('/auth/logout',{method:'POST'});location.href='/login'}
+fetch('/auth/me').then(r=>r.json()).then(data=>{if(data.user?.role!=='admin')document.querySelectorAll('.monitor-link').forEach(link=>link.remove())});
 fetch('/state',{cache:'no-store'}).then(response=>response.json()).then(data=>{draw({...data,steps:[]});if(data.stale){addMessage('ami','This browser’s earlier session is no longer available. Please start a new conversation.');return}if(data.transcript?.length){$('chat').innerHTML='';for(const message of data.transcript)addMessage(message.role==='user'?'customer':'ami',message.content);const replies=data.transcript.filter(message=>message.role==='assistant');lastAgentResponse=replies.at(-1)?.content||''}}).catch(()=>{});
 </script>
 </body>

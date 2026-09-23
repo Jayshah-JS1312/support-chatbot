@@ -1,7 +1,7 @@
 """Customer-facing chat, session, reset, and feedback routes."""
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from support_chatbot import observe, policy
 from support_chatbot.api.dependencies import (
@@ -20,7 +20,10 @@ router = APIRouter(tags=["customer"])
 @router.get("/", response_class=HTMLResponse)
 @router.get("/index.html", response_class=HTMLResponse)
 def chat_page(request: Request):
-    context = runtime(request).get_session(request.cookies.get("sid"))
+    user = getattr(request.state, "user", None)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    context = runtime(request).get_session(request.cookies.get("sid"), user.user_id)
     response = HTMLResponse(CHAT_PAGE)
     set_session_cookie(response, context)
     return response
@@ -43,7 +46,7 @@ def reset_conversation(
     app_runtime = runtime(request)
     with app_runtime.get_turn_lock(context.sid):
         fresh = app_runtime.reset_session(context.sid)
-        app_runtime.save_sessions()
+        app_runtime.save_sessions(context.sid)
         return {"ok": True, **app_runtime.public_state(fresh)}
 
 
@@ -132,7 +135,7 @@ def chat(
             cost=observe.turn_cost(turn_id),
             error=turn_failed,
         )
-        app_runtime.save_sessions()
+        app_runtime.save_sessions(context.sid)
 
         return {
             "reply": safe_reply,

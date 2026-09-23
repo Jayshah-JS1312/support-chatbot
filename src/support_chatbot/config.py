@@ -29,6 +29,8 @@ class Settings:
     )
     database_pool_min: int = int(os.getenv("SUPPORT_CHATBOT_DB_POOL_MIN", "1"))
     database_pool_max: int = int(os.getenv("SUPPORT_CHATBOT_DB_POOL_MAX", "5"))
+    auth_session_hours: int = int(os.getenv("SUPPORT_CHATBOT_AUTH_SESSION_HOURS", "24"))
+    expose_reset_token: bool = _flag("SUPPORT_CHATBOT_EXPOSE_RESET_TOKEN")
 
 
 settings = Settings()

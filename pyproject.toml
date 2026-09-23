@@ -9,6 +9,7 @@ description = "Policy-controlled, tool-using customer support chatbot"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "bcrypt>=4,<6",
   "chromadb>=0.5,<2",
   "fastapi>=0.115,<1",
   "numpy>=1.26,<3",

@@ -11,8 +11,15 @@ from support_chatbot.persistence import get_repository
 
 @pytest.fixture
 def api_client(tmp_path):
-    runtime = RuntimeState(get_repository())
+    repository = get_repository()
+    repository.enforce_auth = True
+    runtime = RuntimeState(repository)
     with TestClient(create_app(runtime)) as client:
+        login = client.post(
+            "/auth/login",
+            json={"email": "raj@example.com", "password": "RajDemo!2026"},
+        )
+        assert login.status_code == 200
         yield client, runtime
 
 
@@ -119,7 +126,7 @@ def test_only_sanitized_agent_response_is_persisted(api_client, monkeypatch):
     assert response.status_code == 200
     assert response.json()["reply"] == safe_reply
     assert response.json()["transcript"][-1]["content"] == safe_reply
-    persisted = runtime.repository.load_session(next(iter(runtime.sessions)))
+    persisted = runtime.repository.sessions[next(iter(runtime.sessions))]
     persisted_text = str(persisted["history"])
     assert raw_reply not in persisted_text
     assert safe_reply in persisted_text
@@ -166,10 +173,9 @@ def test_feedback_is_validated_and_persisted(api_client):
     assert record["corrected_response"] == "better answer"
 
 
-def test_internal_routes_remain_hidden_by_default(api_client):
+def test_customer_receives_forbidden_on_internal_routes(api_client):
     client, _ = api_client
 
     response = client.get("/monitoring")
 
-    assert response.status_code == 404
-    assert response.json()["error"]["code"] == "not_found"
+    assert response.status_code == 403

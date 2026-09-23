@@ -16,6 +16,7 @@ from support_chatbot.api.routes import (
     workflow_callbacks,
 )
 from support_chatbot.api.runtime import RuntimeState
+from support_chatbot.api.auth_middleware import AuthenticationMiddleware
 from support_chatbot.config import settings
 
 
@@ -142,6 +143,7 @@ def create_app(runtime_state=None):
         RequestBoundaryMiddleware,
         max_request_bytes=settings.max_request_bytes,
     )
+    app.add_middleware(AuthenticationMiddleware)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, error: RequestValidationError):

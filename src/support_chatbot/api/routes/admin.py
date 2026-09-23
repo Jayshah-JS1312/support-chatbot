@@ -6,18 +6,19 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from support_chatbot import dashboard, observe
-from support_chatbot.api.dependencies import require_internal_ui, runtime
+from support_chatbot.api.dependencies import require_admin, runtime
 from support_chatbot.llm import MODEL
 
 
 router = APIRouter(
     tags=["admin"],
-    dependencies=[Depends(require_internal_ui)],
+    dependencies=[Depends(require_admin)],
 )
 
 
 @router.get("/monitoring", response_class=HTMLResponse)
 @router.get("/logs", response_class=HTMLResponse)
+@router.get("/admin", response_class=HTMLResponse)
 def monitoring_page():
     return HTMLResponse(dashboard.PAGE)
 

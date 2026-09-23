@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from support_chatbot import dashboard, evals, observe
-from support_chatbot.api.dependencies import require_internal_ui, runtime
+from support_chatbot.api.dependencies import require_admin, runtime
 from support_chatbot.api.models import ResetRequest
 from support_chatbot.llm import MODEL
 
@@ -12,7 +12,7 @@ from support_chatbot.llm import MODEL
 router = APIRouter(tags=["observability"])
 evaluation_router = APIRouter(
     tags=["evaluations"],
-    dependencies=[Depends(require_internal_ui)],
+    dependencies=[Depends(require_admin)],
 )
 
 

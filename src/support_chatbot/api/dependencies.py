@@ -3,6 +3,7 @@
 from fastapi import HTTPException, Request, Response
 
 from support_chatbot.config import settings
+from support_chatbot.api.auth_middleware import AUTH_COOKIE
 
 
 def runtime(request: Request):
@@ -21,12 +22,36 @@ def set_session_cookie(response, context):
         )
 
 
-def session(request: Request, response: Response):
-    context = runtime(request).get_session(request.cookies.get("sid"))
-    set_session_cookie(response, context)
-    return context
+def require_user(request: Request):
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user
 
 
-def require_internal_ui():
+def require_admin(request: Request):
+    user = require_user(request)
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Administrator access required")
     if not settings.expose_internal_ui:
         raise HTTPException(status_code=404, detail="Not found")
+    return user
+
+
+def set_auth_cookie(response, token):
+    response.set_cookie(
+        AUTH_COOKIE,
+        token,
+        max_age=settings.auth_session_hours * 3600,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=settings.secure_cookies,
+    )
+
+
+def session(request: Request, response: Response):
+    user = require_user(request)
+    context = runtime(request).get_session(request.cookies.get("sid"), user.user_id)
+    set_session_cookie(response, context)
+    return context

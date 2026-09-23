@@ -30,6 +30,8 @@ deployment unless the route is protected by operator authentication.
 | `SUPPORT_CHATBOT_MAX_REQUEST_BYTES` | Request-body limit | `65536` |
 | `SUPPORT_CHATBOT_SECURE_COOKIES` | Add the cookie `Secure` flag | `false` |
 | `SUPPORT_CHATBOT_EXPOSE_INTERNAL_UI` | Enable traces and `/monitoring` | `false` |
+| `SUPPORT_CHATBOT_AUTH_SESSION_HOURS` | Login-session lifetime | `24` |
+| `SUPPORT_CHATBOT_EXPOSE_RESET_TOKEN` | Return reset token in API response; local testing only | `false` |
 
 ## Runtime endpoints
 
@@ -38,8 +40,13 @@ deployment unless the route is protected by operator authentication.
 | `/healthz` | Liveness probe | aggregate, no customer data |
 | `/readyz` | Readiness and model name | aggregate, no customer data |
 | `/metrics` | Prometheus metrics | aggregate, no customer data |
-| `/monitoring` | Operator dashboard | internal only |
-| `/trace.jsonl` | Raw agent events | internal only |
+| `/monitoring` | Operator dashboard | authenticated admin only |
+| `/evals` | Retrieval evaluation dashboard | authenticated admin only |
+| `/trace.jsonl` | Raw agent events | authenticated admin only |
+
+The demo password-reset endpoint can expose its token only when
+`SUPPORT_CHATBOT_EXPOSE_RESET_TOKEN=true`. Keep this disabled in every deployed
+environment and connect reset-token delivery to a transactional email provider.
 
 ## Hosted Supabase
 
@@ -64,7 +71,6 @@ not use `--include-seed` against a real production database.
 The current server is suitable for local validation and an internal demo. An
 internet-facing release must first add:
 
-- authenticated users and server-side authorization for every order
 - idempotency keys supplied and enforced end-to-end at the HTTP boundary
 - a managed reverse proxy/load balancer with TLS in front of Uvicorn
 - distributed rate limiting and abuse protection

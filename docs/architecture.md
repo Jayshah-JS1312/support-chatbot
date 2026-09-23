@@ -3,13 +3,15 @@
 ## Request flow
 
 1. A FastAPI customer route or `cli.py` accepts a customer message.
-2. `policy.check_input` removes card-like data and marks suspected instruction override attempts.
-3. The selected planner receives conversation, working, and customer memory.
-4. The model can request only tools declared in `tools.SCHEMAS`.
-5. `policy.guarded_run` enforces cross-turn confirmation and escalation rules.
-6. Tool results update working memory and are returned to the planner.
-7. `policy.check_output` removes identifiers that lack a trusted source.
-8. The sanitized response—not the raw model response—memory, and trace are
+2. Authentication middleware resolves the opaque session cookie and establishes
+   a request identity used by authorization and PostgreSQL RLS.
+3. `policy.check_input` removes card-like data and marks suspected instruction override attempts.
+4. The selected planner receives conversation, working, and customer memory.
+5. The model can request only tools declared in `tools.SCHEMAS`.
+6. `policy.guarded_run` enforces cross-turn confirmation and escalation rules.
+7. Tool results update working memory and are returned to the planner.
+8. `policy.check_output` removes identifiers that lack a trusted source.
+9. The sanitized response—not the raw model response—memory, and trace are
    persisted.
 
 ## Boundaries
@@ -28,14 +30,29 @@
 - `api/app.py`: FastAPI factory, request limits, and structured errors
 - `api/runtime.py`: process-local cache/locks over durable PostgreSQL conversations
 - `api/routes/customer.py`: chat, browser session, reset, and feedback routes
-- `api/routes/authentication.py`: reserved authentication boundary
+- `api/routes/authentication.py`: signup, login, logout, refresh, identity, and password reset
 - `api/routes/admin.py`: internal operator pages, events, and raw traces
 - `api/routes/workflow_callbacks.py`: reserved asynchronous callback boundary
 - `api/routes/observability.py`: health, readiness, metrics, and retrieval evals
 
 The `support-chatbot-web` command serves `support_chatbot.web:app` through
-Uvicorn. Authentication and workflow callback routers are intentionally empty
-until their security, idempotency, and durable-state contracts are implemented.
+Uvicorn. Workflow callbacks remain deliberately unimplemented until signed
+payload, replay-protection, and idempotency contracts are introduced.
+
+## Authentication and authorization
+
+Passwords are bcrypt-hashed. The browser receives an opaque `HttpOnly`,
+`SameSite=Lax` session token; only its SHA-256 digest is stored. Refresh rotates
+the session, logout revokes it, and a successful password reset revokes every
+active session for that user. Signup has no role input and always creates a
+`customer`.
+
+The application switches each business transaction to the restricted
+`app_backend` PostgreSQL role and sets the verified user/role as transaction-
+local context. RLS then limits orders, conversations, messages, memory, support
+requests, actions, and audit events to their owner. Admin-only policies guard
+approval and evaluation records. Application checks still return clear 401/403
+responses; RLS is the defense-in-depth boundary.
 
 ## Observability
 

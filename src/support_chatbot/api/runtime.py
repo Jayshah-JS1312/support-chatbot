@@ -52,29 +52,36 @@ class RuntimeState:
         self.started_at = time.time()
 
     @staticmethod
-    def new_session():
-        return {"convo": ConversationMemory(SYSTEM), "work": WorkingMemory()}
+    def new_session(user_id=None):
+        return {
+            "convo": ConversationMemory(SYSTEM),
+            "work": WorkingMemory(),
+            "user_id": user_id,
+        }
 
-    def get_session(self, cookie_sid=None):
+    def get_session(self, cookie_sid=None, user_id=None):
         """Resolve a browser session and replace unknown stale identifiers."""
         with self.session_lock:
-            persisted = self.repository.load_session(cookie_sid) if cookie_sid else None
-            stale = bool(cookie_sid) and cookie_sid not in self.sessions and persisted is None
+            cached = self.sessions.get(cookie_sid)
+            cache_owned = bool(cached and cached.get("user_id") == user_id)
+            persisted = self.repository.load_session(cookie_sid) if cookie_sid and not cache_owned else None
+            stale = bool(cookie_sid) and not cache_owned and persisted is None
             sid = cookie_sid
             created = False
-            if sid not in self.sessions:
+            if not cache_owned:
                 if persisted:
                     self.sessions[sid] = {
                         "convo": ConversationMemory.from_dict(
                             SYSTEM, {"history": persisted["history"]}
                         ),
                         "work": WorkingMemory.from_dict(persisted["work"]),
+                        "user_id": user_id,
                     }
                 else:
                     sid = uuid.uuid4().hex
-                    self.sessions[sid] = self.new_session()
+                    self.sessions[sid] = self.new_session(user_id)
                     self.repository.create_session(
-                        sid, self.sessions[sid]["work"].to_dict()
+                        sid, self.sessions[sid]["work"].to_dict(), user_id
                     )
                     created = True
                 self.turn_locks[sid] = threading.RLock()
@@ -86,14 +93,19 @@ class RuntimeState:
 
     def reset_session(self, sid):
         with self.session_lock:
-            self.sessions[sid] = self.new_session()
+            user_id = self.sessions.get(sid, {}).get("user_id")
+            self.sessions[sid] = self.new_session(user_id)
             self.turn_locks.setdefault(sid, threading.RLock())
             self.repository.reset_session(sid, self.sessions[sid]["work"].to_dict())
             return self.sessions[sid]
 
-    def save_sessions(self):
+    def save_sessions(self, sid=None):
         with self.session_lock:
-            snapshot = list(self.sessions.items())
+            snapshot = (
+                [(sid, self.sessions[sid])]
+                if sid and sid in self.sessions
+                else list(self.sessions.items())
+            )
         for sid, session in snapshot:
             self.repository.save_session(
                 sid, session["convo"].history, session["work"].to_dict()
