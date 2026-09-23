@@ -210,6 +210,65 @@ def test_expired_approval_completes_without_action(workflow_setup):
     assert repository.support_requests[request_id]["status"] == "COMPLETED_WITHOUT_ACTION"
 
 
+def test_absence_policy_reminds_escalates_and_expires_once(workflow_setup):
+    repository, _, coordinator, _, client = workflow_setup
+    request_id = submit(client, key="absence-lifecycle-001").json()["request_id"]
+    coordinator.draft(request_id)
+    row = repository.support_requests[request_id]
+    baseline = datetime.now(timezone.utc)
+    row["reminder_at"] = (baseline + timedelta(seconds=10)).isoformat()
+    row["escalation_at"] = (baseline + timedelta(seconds=20)).isoformat()
+    row["expires_at"] = (baseline + timedelta(seconds=30)).isoformat()
+
+    reminder = repository.process_absence_policy(baseline + timedelta(seconds=11))
+    assert reminder == {"reminded": [request_id], "escalated": [], "expired": []}
+    assert "no action has been taken" in row["metadata"]["customer_status"]
+
+    escalation = repository.process_absence_policy(baseline + timedelta(seconds=21))
+    assert escalation == {"reminded": [], "escalated": [request_id], "expired": []}
+    assert row["queue_name"] == "supervisor"
+    assert row["assigned_to"] is None
+
+    expiry = repository.process_absence_policy(baseline + timedelta(seconds=31))
+    assert expiry == {"reminded": [], "escalated": [], "expired": [request_id]}
+    assert row["status"] == "COMPLETED_WITHOUT_ACTION"
+    assert row["approval_status"] == "expired"
+    assert repository.process_absence_policy(baseline + timedelta(seconds=40)) == {
+        "reminded": [], "escalated": [], "expired": [],
+    }
+    assert [event["event_type"] for event in repository.audit_events[-3:]] == [
+        "approval_reminder_sent", "approval_escalated", "approval_expired",
+    ]
+
+
+def test_late_approval_is_409_and_cannot_revive_request(workflow_setup):
+    repository, dispatcher, coordinator, _, client = workflow_setup
+    request_id = submit(client, key="late-approval-001").json()["request_id"]
+    coordinator.draft(request_id)
+    repository.support_requests[request_id]["expires_at"] = (
+        datetime.now(timezone.utc) - timedelta(seconds=1)
+    ).isoformat()
+    client.post("/auth/logout")
+    client.post("/auth/login", json={
+        "email": "admin@example.com", "password": "AdminDemo!2026",
+    })
+    response = client.post(f"/admin/requests/{request_id}/decision", json={
+        "decision": "approve", "reason": "Too late", "review_necessary": True,
+    })
+    assert response.status_code == 409
+    assert repository.support_requests[request_id]["status"] == "COMPLETED_WITHOUT_ACTION"
+    assert repository.support_requests[request_id]["approval_status"] == "expired"
+    assert not any(call == (request_id, "execute") for call in dispatcher.calls)
+    client.post("/auth/logout")
+    client.post("/auth/login", json={
+        "email": "raj@example.com", "password": "RajDemo!2026",
+    })
+    customer_status = client.get(f"/requests/{request_id}")
+    assert customer_status.status_code == 200
+    assert customer_status.json()["state"] == "COMPLETED_WITHOUT_ACTION"
+    assert "No action was taken" in customer_status.json()["status_message"]
+
+
 def test_customer_cannot_read_another_customers_request(workflow_setup):
     repository, _, _, _, client = workflow_setup
     request_id = submit(client, key="ownership-key-001").json()["request_id"]

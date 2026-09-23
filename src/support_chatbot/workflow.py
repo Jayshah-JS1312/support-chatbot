@@ -116,11 +116,30 @@ class WorkflowCoordinator:
         self.draft_generator = draft_generator or self._generate_draft
         if isinstance(self.dispatcher, LocalWorkflowDispatcher):
             self.dispatcher.bind(self)
+        self.absence_closed = threading.Event()
+        self.absence_worker = threading.Thread(
+            target=self._monitor_absence, name="ami-absence-policy", daemon=True
+        )
+        self.absence_worker.start()
 
     def close(self):
+        self.absence_closed.set()
+        self.absence_worker.join(timeout=2)
         close = getattr(self.dispatcher, "close", None)
         if close:
             close()
+
+    def _monitor_absence(self):
+        interval = max(1, settings.absence_scan_seconds)
+        while not self.absence_closed.wait(interval):
+            try:
+                self.apply_absence_policy()
+            except Exception as error:
+                observe.log("error", where="absence_policy", error=type(error).__name__)
+
+    def apply_absence_policy(self):
+        with system_identity():
+            return self.repository.process_absence_policy()
 
     def _generate_draft(self, request):
         from support_chatbot import agent_profile, plan_execute, planner
@@ -207,7 +226,7 @@ class WorkflowCoordinator:
         content, proposed_action = self.draft_generator(request)
         with system_identity():
             saved = self.repository.save_resolution_draft(
-                request_id, content, proposed_action, settings.approval_ttl_hours
+                request_id, content, proposed_action, settings.approval_deadlines
             )
         return {"duplicate": False, "state": saved["status"]}
 

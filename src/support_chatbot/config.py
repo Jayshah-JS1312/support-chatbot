@@ -37,7 +37,24 @@ class Settings:
     qstash_next_signing_key: str = os.getenv("QSTASH_NEXT_SIGNING_KEY", "")
     workflow_retries: int = int(os.getenv("SUPPORT_CHATBOT_WORKFLOW_RETRIES", "3"))
     workflow_lease_seconds: int = int(os.getenv("SUPPORT_CHATBOT_WORKFLOW_LEASE_SECONDS", "300"))
-    approval_ttl_hours: int = int(os.getenv("SUPPORT_CHATBOT_APPROVAL_TTL_HOURS", "24"))
+    absence_demo_mode: bool = _flag("SUPPORT_CHATBOT_ABSENCE_DEMO_MODE")
+    approval_reminder_seconds: int = int(os.getenv("SUPPORT_CHATBOT_APPROVAL_REMINDER_SECONDS", "3600"))
+    approval_escalation_seconds: int = int(os.getenv("SUPPORT_CHATBOT_APPROVAL_ESCALATION_SECONDS", "7200"))
+    approval_expiry_seconds: int = int(os.getenv("SUPPORT_CHATBOT_APPROVAL_EXPIRY_SECONDS", "86400"))
+    absence_scan_seconds: int = int(os.getenv("SUPPORT_CHATBOT_ABSENCE_SCAN_SECONDS", "15"))
+
+    @property
+    def approval_deadlines(self) -> tuple[int, int, int]:
+        if self.absence_demo_mode:
+            return 60, 120, 300
+        deadlines = (
+            self.approval_reminder_seconds,
+            self.approval_escalation_seconds,
+            self.approval_expiry_seconds,
+        )
+        if not (0 < deadlines[0] < deadlines[1] < deadlines[2]):
+            raise ValueError("Approval deadlines must be positive and ordered reminder < escalation < expiry")
+        return deadlines
 
     @property
     def workflow_enabled(self) -> bool:

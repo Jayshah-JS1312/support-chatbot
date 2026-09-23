@@ -415,17 +415,24 @@ class PostgresRepository:
                  Jsonb(proposal["customer_consequences"]), Jsonb(proposal["policy_evidence"]),
                  proposal["order_version"], supplied_hash),
             ).fetchone()
+            reminder_seconds, escalation_seconds, expiry_seconds = settings.approval_deadlines
             conn.execute(
-                """insert into public.approval_tasks(resolution_draft_id,status,expires_at)
-                values(%s,'pending',now()+make_interval(hours => %s))""",
-                (draft["id"], settings.approval_ttl_hours),
+                """insert into public.approval_tasks
+                (resolution_draft_id,status,reminder_at,escalation_at,expires_at)
+                values(%s,'pending',now()+make_interval(secs => %s),
+                now()+make_interval(secs => %s),now()+make_interval(secs => %s))""",
+                (draft["id"], reminder_seconds, escalation_seconds, expiry_seconds),
             )
             conn.execute("""insert into public.audit_events
                 (user_id,actor_type,actor_id,event_type,resource_type,resource_id,request_id,detail)
                 values(%s,'customer',%s,'approval_created','support_request',%s,%s,%s)""",
                 (identity.user_id, identity.user_id, str(request["id"]), str(request["id"]),
                  Jsonb({"draft_id": str(draft["id"]), "action": proposal["action_name"],
-                        "deadline_hours": settings.approval_ttl_hours})),)
+                        "deadlines_seconds": {
+                            "reminder": reminder_seconds,
+                            "escalation": escalation_seconds,
+                            "expiry": expiry_seconds,
+                        }})),)
             conn.execute(
                 "update public.action_proposals set status='confirmed',customer_confirmed_at=now() where id=%s",
                 (proposal_id,),
@@ -517,7 +524,7 @@ class PostgresRepository:
             ).fetchone()
         return self._workflow_request(row)
 
-    def save_resolution_draft(self, request_id, content, proposed_action, approval_ttl_hours):
+    def save_resolution_draft(self, request_id, content, proposed_action, approval_deadlines):
         with self.connection() as conn:
             request = conn.execute(
                 "select * from public.support_requests where id=%s for update", (request_id,)
@@ -556,19 +563,29 @@ class PostgresRepository:
                     bool(proposed_action.get("customer_confirmed")),
                 ),
             ).fetchone()
+            reminder_seconds, escalation_seconds, expiry_seconds = approval_deadlines
             conn.execute(
-                """insert into public.approval_tasks(resolution_draft_id,status,expires_at)
-                values(%s,'pending',now()+make_interval(hours => %s))
+                """insert into public.approval_tasks
+                (resolution_draft_id,status,reminder_at,escalation_at,expires_at)
+                values(%s,'pending',now()+make_interval(secs => %s),
+                now()+make_interval(secs => %s),now()+make_interval(secs => %s))
                 on conflict(resolution_draft_id) do update set status='pending',
-                expires_at=excluded.expires_at,decision_reason=null,decided_at=null""",
-                (draft["id"], approval_ttl_hours),
+                reminder_at=excluded.reminder_at,reminded_at=null,
+                escalation_at=excluded.escalation_at,escalated_at=null,
+                expires_at=excluded.expires_at,queue_name='review',
+                decision_reason=null,decided_at=null""",
+                (draft["id"], reminder_seconds, escalation_seconds, expiry_seconds),
             )
             conn.execute("""insert into public.audit_events
                 (user_id,actor_type,actor_id,event_type,resource_type,resource_id,request_id,detail)
                 values(%s,'system','workflow','approval_created','support_request',%s,%s,%s)""",
                 (request["user_id"], str(request_id), str(request_id), Jsonb({
                     "draft_id": str(draft["id"]), "action": action_name,
-                    "deadline_hours": approval_ttl_hours,
+                    "deadlines_seconds": {
+                        "reminder": reminder_seconds,
+                        "escalation": escalation_seconds,
+                        "expiry": expiry_seconds,
+                    },
                 })),)
             row = conn.execute(
                 """update public.support_requests set status='AWAITING_APPROVAL',order_id=coalesce(%s,order_id),
@@ -580,8 +597,8 @@ class PostgresRepository:
 
     def list_approval_tasks(self, status="pending"):
         clauses = {
-            "pending": "a.status='pending' and a.expires_at>now()",
-            "overdue": "a.status='pending' and a.expires_at<=now()",
+            "pending": "a.status='pending' and a.queue_name='review' and a.expires_at>now()",
+            "overdue": "a.status='pending' and a.queue_name='supervisor' and a.expires_at>now()",
             "approved": "a.status='approved'",
             "rejected": "a.status='rejected'",
             "expired": "a.status='expired'",
@@ -590,7 +607,8 @@ class PostgresRepository:
         with self.connection() as conn:
             rows = conn.execute(f"""select a.id,r.id as request_id,r.reference_number,
                 r.summary as customer_request,r.status as request_status,a.status,
-                a.expires_at,a.created_at,a.decided_at,a.review_necessary,
+                a.reminder_at,a.reminded_at,a.escalation_at,a.escalated_at,
+                a.expires_at,a.queue_name,a.created_at,a.decided_at,a.review_necessary,
                 p.email as customer_email,p.display_name as customer_name,
                 reviewer.display_name as reviewer_name,
                 extract(epoch from (now()-a.created_at))::int as age_seconds
@@ -607,7 +625,9 @@ class PostgresRepository:
     def get_approval_detail(self, request_id):
         with self.connection() as conn:
             row = conn.execute("""select a.id as approval_id,a.status as approval_status,
-                a.assigned_to,a.decision_reason,a.expires_at,a.decided_at,a.created_at,
+                a.assigned_to,a.decision_reason,a.reminder_at,a.reminded_at,
+                a.escalation_at,a.escalated_at,a.expires_at,a.queue_name,
+                a.decided_at,a.created_at,
                 a.review_necessary,d.content as proposed_response,d.proposed_action,
                 d.action_name,d.action_arguments,d.customer_consequences,d.policy_evidence,
                 d.order_version,d.action_hash,d.version as draft_version,
@@ -647,12 +667,17 @@ class PostgresRepository:
 
     def decide_support_request(self, request_id, approve, reason, admin_user_id,
                                edited_response=None, review_necessary=None):
+        # Persist any due expiry before evaluating the decision. A delayed scheduler
+        # must never make a late approval valid.
+        self.process_absence_policy()
         target = "APPROVED" if approve else "REJECTED"
         approval = "approved" if approve else "rejected"
         with self.connection() as conn:
             draft = conn.execute("""select d.id,d.content,d.version from public.resolution_drafts d
                 join public.support_requests r on r.id=d.support_request_id
-                where r.id=%s and r.status='AWAITING_APPROVAL' for update""",
+                join public.approval_tasks a on a.resolution_draft_id=d.id
+                where r.id=%s and r.status='AWAITING_APPROVAL'
+                and a.status='pending' and a.expires_at>now() for update of r,d,a""",
                 (request_id,)).fetchone()
             if not draft:
                 existing = conn.execute("select * from public.support_requests where id=%s", (request_id,)).fetchone()
@@ -725,11 +750,33 @@ class PostgresRepository:
 
     def claim_execution(self, request_id, lease_seconds):
         with self.connection() as conn:
+            late = conn.execute("""select r.user_id,a.id as approval_id from public.support_requests r
+                join public.resolution_drafts d on d.support_request_id=r.id
+                join public.approval_tasks a on a.resolution_draft_id=d.id
+                where r.id=%s and r.status='APPROVED' and a.expires_at<=now()
+                for update of r,a""", (request_id,)).fetchone()
+            if late:
+                conn.execute("update public.approval_tasks set status='expired',decided_at=now() where id=%s",
+                             (late["approval_id"],))
+                conn.execute("""update public.support_requests set status='COMPLETED_WITHOUT_ACTION',
+                    last_error='approval_expired',completed_at=now(),updated_at=now(),
+                    metadata=metadata || '{"customer_status":"The approval deadline passed. No action was taken."}'::jsonb
+                    where id=%s""", (request_id,))
+                conn.execute("""insert into public.audit_events
+                    (user_id,actor_type,actor_id,event_type,resource_type,resource_id,request_id,detail)
+                    values(%s,'system','absence-policy','expired_before_execution','support_request',%s,%s,%s)""",
+                    (late["user_id"], str(request_id), str(request_id),
+                     Jsonb({"action_executed": False})))
+                return None
             row = conn.execute(
                 """update public.support_requests set status='EXECUTING',
                 processing_lease_until=now()+make_interval(secs => %s),updated_at=now()
                 where id=%s and (status='APPROVED' or
-                (status='EXECUTING' and processing_lease_until<now())) returning *""",
+                (status='EXECUTING' and processing_lease_until<now()))
+                and exists (select 1 from public.resolution_drafts d
+                  join public.approval_tasks a on a.resolution_draft_id=d.id
+                  where d.support_request_id=support_requests.id
+                  and a.status='approved' and a.expires_at>now()) returning *""",
                 (lease_seconds, request_id),
             ).fetchone()
         return self._workflow_request(row)
@@ -744,11 +791,29 @@ class PostgresRepository:
             if request["status"] == "COMPLETED":
                 return self._workflow_request(request)
             draft = conn.execute(
-                """select d.*,a.approved_action_hash from public.resolution_drafts d
+                """select d.*,a.approved_action_hash,a.expires_at from public.resolution_drafts d
                 join public.approval_tasks a on a.resolution_draft_id=d.id
                 where d.support_request_id=%s""", (request_id,),
             ).fetchone()
             action_name = draft["action_name"] or "send_resolution"
+            if action_name != "send_resolution" and draft["expires_at"] <= datetime.now(timezone.utc):
+                conn.execute(
+                    """insert into public.action_executions
+                    (idempotency_key,user_id,support_request_id,order_id,action_type,
+                     status,request_payload,error_code,result_payload,finished_at)
+                    values(%s,%s,%s,%s,%s,'refused','{}'::jsonb,
+                     'approval_expired','{"error":"Approval deadline passed"}'::jsonb,now())
+                    on conflict(idempotency_key) do nothing""",
+                    (key, request["user_id"], request_id, request["order_id"], action_name),
+                )
+                row = conn.execute(
+                    """update public.support_requests set status='COMPLETED_WITHOUT_ACTION',
+                    last_error='approval_expired',completed_at=now(),
+                    processing_lease_until=null,updated_at=now(),
+                    metadata=metadata || '{"customer_status":"The approval deadline passed. No action was taken."}'::jsonb
+                    where id=%s returning *""", (request_id,),
+                ).fetchone()
+                return self._workflow_request(row)
             if action_name != "send_resolution":
                 recomputed = action_hash(
                     action_name, dict(draft["action_arguments"]),
@@ -836,26 +901,72 @@ class PostgresRepository:
             ).fetchone()
         return self._workflow_request(row)
 
-    def expire_approvals(self):
+    def process_absence_policy(self):
         with self.connection() as conn:
-            rows = conn.execute(
+            reminded = conn.execute(
+                """update public.approval_tasks a set reminded_at=now()
+                from public.resolution_drafts d, public.support_requests r
+                where a.resolution_draft_id=d.id and d.support_request_id=r.id
+                and a.status='pending' and a.reminded_at is null
+                and a.reminder_at<=now() and a.expires_at>now()
+                returning r.id,r.user_id"""
+            ).fetchall()
+            for row in reminded:
+                message = "Human review is taking longer than expected. Your request is still pending and no action has been taken."
+                conn.execute("""update public.support_requests set
+                    metadata=metadata || jsonb_build_object('customer_status',%s::text),updated_at=now()
+                    where id=%s""", (message, row["id"]))
+                conn.execute("""insert into public.audit_events
+                    (user_id,actor_type,actor_id,event_type,resource_type,resource_id,request_id,detail)
+                    values(%s,'system','absence-policy','approval_reminder_sent','support_request',%s,%s,%s)""",
+                    (row["user_id"], str(row["id"]), str(row["id"]), Jsonb({"customer_notified": True})))
+
+            escalated = conn.execute(
+                """update public.approval_tasks a set escalated_at=now(),
+                queue_name='supervisor',assigned_to=null,reassigned_at=now()
+                from public.resolution_drafts d, public.support_requests r
+                where a.resolution_draft_id=d.id and d.support_request_id=r.id
+                and a.status='pending' and a.escalated_at is null
+                and a.escalation_at<=now() and a.expires_at>now()
+                returning r.id,r.user_id"""
+            ).fetchall()
+            for row in escalated:
+                message = "Your request is delayed and has been escalated to the supervisor queue. No action has been taken."
+                conn.execute("""update public.support_requests set
+                    metadata=metadata || jsonb_build_object('customer_status',%s::text),updated_at=now()
+                    where id=%s""", (message, row["id"]))
+                conn.execute("""insert into public.audit_events
+                    (user_id,actor_type,actor_id,event_type,resource_type,resource_id,request_id,detail)
+                    values(%s,'system','absence-policy','approval_escalated','support_request',%s,%s,%s)""",
+                    (row["user_id"], str(row["id"]), str(row["id"]),
+                     Jsonb({"queue": "supervisor", "customer_notified": True})))
+
+            expired = conn.execute(
                 """with expired as (
                   update public.approval_tasks set status='expired',decided_at=now()
                   where status='pending' and expires_at<=now() returning resolution_draft_id
-                ), requests as (
-                  update public.support_requests r set status='EXPIRED',updated_at=now()
-                  from public.resolution_drafts d, expired e where d.id=e.resolution_draft_id
-                  and r.id=d.support_request_id and r.status='AWAITING_APPROVAL' returning r.id
                 ) update public.support_requests r set status='COMPLETED_WITHOUT_ACTION',
-                  completed_at=now(),updated_at=now() from requests x where r.id=x.id
+                  completed_at=now(),updated_at=now(),
+                  metadata=metadata || '{"customer_status":"Human approval was not received before the deadline. No action was taken."}'::jsonb
+                  from public.resolution_drafts d, expired e
+                  where d.id=e.resolution_draft_id and r.id=d.support_request_id
+                  and r.status in ('AWAITING_APPROVAL','EXPIRED')
                   returning r.id,r.user_id"""
             ).fetchall()
-            for row in rows:
+            for row in expired:
                 conn.execute("""insert into public.audit_events
                     (user_id,actor_type,actor_id,event_type,resource_type,resource_id,request_id,detail)
-                    values(%s,'system','workflow','approval_expired','support_request',%s,%s,'{}')""",
-                    (row["user_id"], str(row["id"]), str(row["id"])),)
-        return [str(row["id"]) for row in rows]
+                    values(%s,'system','absence-policy','approval_expired','support_request',%s,%s,%s)""",
+                    (row["user_id"], str(row["id"]), str(row["id"]),
+                     Jsonb({"customer_notified": True, "action_executed": False})),)
+        return {
+            "reminded": [str(row["id"]) for row in reminded],
+            "escalated": [str(row["id"]) for row in escalated],
+            "expired": [str(row["id"]) for row in expired],
+        }
+
+    def expire_approvals(self):
+        return self.process_absence_policy()["expired"]
 
     def record_dead_letter(self, request_id, workflow_run_id, status, body, headers):
         with self.connection() as conn:
@@ -1089,6 +1200,8 @@ class InMemoryRepository:
             return copy.deepcopy(existing), False
         if proposal["status"] != "previewed": raise ActionProposalError("Proposal is expired or already confirmed")
         request_id = str(uuid.uuid4())
+        reminder_seconds, escalation_seconds, expiry_seconds = settings.approval_deadlines
+        now = datetime.now(timezone.utc)
         row = {"id": request_id, "reference_number": f"REQ-{1001 + len(self.support_requests)}",
                "user_id": identity.user_id, "summary": f"Confirmed proposal to {proposal['action']}",
                "status": "AWAITING_APPROVAL", "metadata": {"proposal_id": proposal_id, "action_hash": supplied_hash},
@@ -1103,13 +1216,20 @@ class InMemoryRepository:
                "order_version": proposal["order_version"], "action_hash": supplied_hash,
                "customer_confirmed_at": datetime.now(timezone.utc).isoformat(),
                "approval_status": "pending", "approved_action_hash": None,
-               "expires_at": (datetime.now(timezone.utc) + timedelta(hours=settings.approval_ttl_hours)).isoformat()}
+               "reminder_at": (now + timedelta(seconds=reminder_seconds)).isoformat(),
+               "escalation_at": (now + timedelta(seconds=escalation_seconds)).isoformat(),
+               "expires_at": (now + timedelta(seconds=expiry_seconds)).isoformat(),
+               "queue_name": "review", "reminded_at": None, "escalated_at": None}
         self.support_requests[request_id] = row; self.request_keys[key] = request_id
         proposal["status"] = "confirmed"
         self.audit_events.append({"event_type": "approval_created", "actor_id": identity.user_id,
                                   "resource_id": request_id,
                                   "detail": {"action": proposal["action"],
-                                             "deadline_hours": settings.approval_ttl_hours},
+                                             "deadlines_seconds": {
+                                                 "reminder": reminder_seconds,
+                                                 "escalation": escalation_seconds,
+                                                 "expiry": expiry_seconds,
+                                             }},
                                   "created_at": datetime.now(timezone.utc).isoformat()})
         return copy.deepcopy(row), True
     def get_support_request(self, request_id):
@@ -1142,10 +1262,12 @@ class InMemoryRepository:
         if not row or row["status"] not in {"RECEIVED", "QUEUED"}: return None
         row["status"] = "DRAFTING"; row["processing_lease_until"] = (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)).isoformat()
         return copy.deepcopy(row)
-    def save_resolution_draft(self, request_id, content, proposed_action, approval_ttl_hours):
+    def save_resolution_draft(self, request_id, content, proposed_action, approval_deadlines):
         row = self.support_requests.get(str(request_id))
         if not row or row["status"] != "DRAFTING": return None
         proposed_action = proposed_action or {"type": "send_resolution"}
+        reminder_seconds, escalation_seconds, expiry_seconds = approval_deadlines
+        now = datetime.now(timezone.utc)
         row.update({"status": "AWAITING_APPROVAL", "draft_content": content,
                     "proposed_action": copy.deepcopy(proposed_action), "approval_status": "pending",
                     "action_name": proposed_action.get("type", "send_resolution"),
@@ -1156,12 +1278,19 @@ class InMemoryRepository:
                     "action_hash": proposed_action.get("action_hash"),
                     "customer_confirmed_at": (datetime.now(timezone.utc).isoformat()
                                               if proposed_action.get("customer_confirmed") else None),
-                    "expires_at": (datetime.now(timezone.utc) + timedelta(hours=approval_ttl_hours)).isoformat(),
+                    "reminder_at": (now + timedelta(seconds=reminder_seconds)).isoformat(),
+                    "escalation_at": (now + timedelta(seconds=escalation_seconds)).isoformat(),
+                    "expires_at": (now + timedelta(seconds=expiry_seconds)).isoformat(),
+                    "queue_name": "review", "reminded_at": None, "escalated_at": None,
                     "processing_lease_until": None})
         self.audit_events.append({"event_type": "approval_created", "actor_id": "workflow",
                                   "resource_id": str(request_id),
                                   "detail": {"action": row["action_name"],
-                                             "deadline_hours": approval_ttl_hours},
+                                             "deadlines_seconds": {
+                                                 "reminder": reminder_seconds,
+                                                 "escalation": escalation_seconds,
+                                                 "expiry": expiry_seconds,
+                                             }},
                                   "created_at": datetime.now(timezone.utc).isoformat()})
         return copy.deepcopy(row)
     def list_approval_tasks(self, status="pending"):
@@ -1171,8 +1300,10 @@ class InMemoryRepository:
             task_status = row.get("approval_status")
             expires = datetime.fromisoformat(row["expires_at"]) if row.get("expires_at") else now
             matches = (
-                (status == "pending" and task_status == "pending" and expires > now)
-                or (status == "overdue" and task_status == "pending" and expires <= now)
+                (status == "pending" and task_status == "pending" and expires > now
+                 and row.get("queue_name", "review") == "review")
+                or (status == "overdue" and task_status == "pending" and expires > now
+                    and row.get("queue_name") == "supervisor")
                 or task_status == status
                 or status == "all"
             )
@@ -1180,6 +1311,10 @@ class InMemoryRepository:
                 rows.append({"request_id": row["id"], "reference_number": row["reference_number"],
                              "customer_request": row["summary"], "status": task_status,
                              "request_status": row["status"], "expires_at": row.get("expires_at"),
+                             "reminder_at": row.get("reminder_at"),
+                             "escalation_at": row.get("escalation_at"),
+                             "escalated_at": row.get("escalated_at"),
+                             "queue_name": row.get("queue_name", "review"),
                              "review_necessary": row.get("review_necessary")})
         return copy.deepcopy(rows)
 
@@ -1203,6 +1338,9 @@ class InMemoryRepository:
                                edited_response=None, review_necessary=None):
         row = self.support_requests.get(str(request_id)); target = "APPROVED" if approve else "COMPLETED"
         if not row: raise InvalidWorkflowTransition(request_id)
+        if row.get("expires_at") and datetime.fromisoformat(row["expires_at"]) <= datetime.now(timezone.utc):
+            self.process_absence_policy()
+            raise InvalidWorkflowTransition(request_id)
         if row["status"] == target: return copy.deepcopy(row)
         if row["status"] != "AWAITING_APPROVAL": raise InvalidWorkflowTransition(request_id)
         edited = bool(edited_response and edited_response.strip()
@@ -1240,6 +1378,11 @@ class InMemoryRepository:
     def claim_execution(self, request_id, lease_seconds):
         row = self.support_requests.get(str(request_id))
         if not row or row["status"] != "APPROVED": return None
+        if row.get("expires_at") and datetime.fromisoformat(row["expires_at"]) <= datetime.now(timezone.utc):
+            row["status"] = "COMPLETED_WITHOUT_ACTION"
+            row["last_error"] = "approval_expired"
+            row.setdefault("metadata", {})["customer_status"] = "The approval deadline passed. No action was taken."
+            return None
         row["status"] = "EXECUTING"; row["processing_lease_until"] = (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)).isoformat()
         return copy.deepcopy(row)
     def complete_execution(self, request_id):
@@ -1269,16 +1412,37 @@ class InMemoryRepository:
         self.action_executions[key] = {"status": "succeeded", "response": row.get("draft_content")}
         if row["status"] == "EXECUTING": row["status"] = "COMPLETED"
         return copy.deepcopy(row)
-    def expire_approvals(self):
-        expired = []
-        now = datetime.now(timezone.utc)
+    def process_absence_policy(self, now=None):
+        reminded, escalated, expired = [], [], []
+        now = now or datetime.now(timezone.utc)
         for row in self.support_requests.values():
-            if row["status"] == "AWAITING_APPROVAL" and datetime.fromisoformat(row["expires_at"]) <= now:
-                row["status"] = "COMPLETED_WITHOUT_ACTION"; row["approval_status"] = "expired"; expired.append(row["id"])
-                self.audit_events.append({"event_type": "approval_expired", "actor_id": "workflow",
-                                          "resource_id": row["id"], "detail": {},
+            if row["status"] != "AWAITING_APPROVAL" or row.get("approval_status") != "pending":
+                continue
+            expires_at = datetime.fromisoformat(row["expires_at"])
+            if not row.get("reminded_at") and datetime.fromisoformat(row["reminder_at"]) <= now < expires_at:
+                row["reminded_at"] = now.isoformat(); reminded.append(row["id"])
+                row.setdefault("metadata", {})["customer_status"] = "Human review is taking longer than expected. Your request is still pending and no action has been taken."
+                self.audit_events.append({"event_type": "approval_reminder_sent", "actor_id": "absence-policy",
+                                          "resource_id": row["id"], "detail": {"customer_notified": True},
                                           "created_at": now.isoformat()})
-        return expired
+            if not row.get("escalated_at") and datetime.fromisoformat(row["escalation_at"]) <= now < expires_at:
+                row["escalated_at"] = now.isoformat(); row["queue_name"] = "supervisor"
+                row["assigned_to"] = None; escalated.append(row["id"])
+                row.setdefault("metadata", {})["customer_status"] = "Your request is delayed and has been escalated to the supervisor queue. No action has been taken."
+                self.audit_events.append({"event_type": "approval_escalated", "actor_id": "absence-policy",
+                                          "resource_id": row["id"],
+                                          "detail": {"queue": "supervisor", "customer_notified": True},
+                                          "created_at": now.isoformat()})
+            if expires_at <= now:
+                row["status"] = "COMPLETED_WITHOUT_ACTION"; row["approval_status"] = "expired"; expired.append(row["id"])
+                row.setdefault("metadata", {})["customer_status"] = "Human approval was not received before the deadline. No action was taken."
+                self.audit_events.append({"event_type": "approval_expired", "actor_id": "absence-policy",
+                                          "resource_id": row["id"],
+                                          "detail": {"customer_notified": True, "action_executed": False},
+                                          "created_at": now.isoformat()})
+        return {"reminded": reminded, "escalated": escalated, "expired": expired}
+    def expire_approvals(self):
+        return self.process_absence_policy()["expired"]
     def record_dead_letter(self, request_id, workflow_run_id, status, body, headers):
         entry = {"request_id": str(request_id), "workflow_run_id": workflow_run_id, "status": status, "body": body, "headers": headers}
         if entry not in self.dead_letters: self.dead_letters.append(entry)

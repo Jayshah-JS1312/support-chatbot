@@ -80,12 +80,15 @@ def _customer_request(row, *, created=False, enqueued=None):
         "state": row["status"],
         "created": created,
     }
+    status_message = (row.get("metadata") or {}).get("customer_status")
+    if status_message:
+        result["status_message"] = status_message
     if enqueued is not None:
         result["enqueue_status"] = "queued" if enqueued else "pending_recovery"
     if row["status"] == "COMPLETED":
         result["reply"] = row.get("draft_content")
     elif row["status"] == "COMPLETED_WITHOUT_ACTION":
-        result["reply"] = "This request expired without an approved action. Please submit it again."
+        result["reply"] = status_message or "This request expired without an approved action. Please submit it again."
     return result
 
 

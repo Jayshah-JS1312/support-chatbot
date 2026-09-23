@@ -75,7 +75,10 @@ approval tasks are unique per request, and action executions have a unique
 business idempotency key. Failed enqueue attempts remain `RECEIVED` or
 `APPROVED` and are retried by `/workflow/recover`. Exhausted Upstash retries
 are recorded in `workflow_dead_letters`. `/workflow/expire` implements the
-absence policy: expire and complete without action—never execute silently.
+absence policy: remind the customer, move overdue work to the supervisor queue,
+then expire and complete without action—never execute silently. Approval and
+execution both recheck the durable final deadline, so a late decision cannot
+revive work even when the periodic sweep is delayed.
 
 `/admin/approvals` is the human decision surface. It presents the customer
 request, conversation, verified order facts, retrieved evidence, draft response,

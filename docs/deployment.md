@@ -38,7 +38,11 @@ deployment unless the route is protected by operator authentication.
 | `QSTASH_NEXT_SIGNING_KEY` | Verify callbacks during key rotation | required for workflows |
 | `SUPPORT_CHATBOT_WORKFLOW_RETRIES` | Upstash delivery retry count | `3` |
 | `SUPPORT_CHATBOT_WORKFLOW_LEASE_SECONDS` | Crash-recovery claim lease | `300` |
-| `SUPPORT_CHATBOT_APPROVAL_TTL_HOURS` | Human approval deadline | `24` |
+| `SUPPORT_CHATBOT_APPROVAL_REMINDER_SECONDS` | First customer-delay reminder | `3600` |
+| `SUPPORT_CHATBOT_APPROVAL_ESCALATION_SECONDS` | Move unanswered work to supervisor queue | `7200` |
+| `SUPPORT_CHATBOT_APPROVAL_EXPIRY_SECONDS` | Final fail-closed deadline | `86400` |
+| `SUPPORT_CHATBOT_ABSENCE_SCAN_SECONDS` | Durable absence-policy sweep interval | `15` |
+| `SUPPORT_CHATBOT_ABSENCE_DEMO_MODE` | Override deadlines with 60s/120s/300s | `false` |
 
 ## Runtime endpoints
 
@@ -60,6 +64,7 @@ deployment unless the route is protected by operator authentication.
 | `POST /workflow/requests` | Signed Upstash workflow delivery | QStash only |
 | `POST /workflow/recover` | Retry stored-but-unenqueued work | authenticated admin |
 | `POST /workflow/expire` | Apply the approval absence policy | authenticated admin |
+| `POST /workflow/absence-policy` | Run reminder, escalation, and expiry sweep | authenticated admin |
 
 The demo password-reset endpoint can expose its token only when
 `SUPPORT_CHATBOT_EXPOSE_RESET_TOKEN=true`. Keep this disabled in every deployed
@@ -100,11 +105,12 @@ internet-facing release must first add:
 - centralized structured logs with sensitive-field redaction
 - provider timeouts, circuit breakers, and alerting
 
-Configure a scheduled job (for example, Render Cron) to call
-`POST /workflow/recover` and `POST /workflow/expire` with an authenticated admin
-session or a future service credential. Upstash performs delivery retries, but
-the recovery scan closes the store-before-enqueue crash window. The written
-absence policy is fail closed: an unanswered approval expires and completes
-without executing the proposed action.
+The app runs an idempotent absence sweep in the background; a production
+scheduler may also call `POST /workflow/absence-policy` as a recovery backstop.
+Upstash performs delivery retries, while `/workflow/recover` closes the
+store-before-enqueue crash window. The written absence policy is fail closed:
+an unanswered approval is reminded, moved to the supervisor queue, then expires
+and completes without executing the proposed action. Late approval returns
+`409`, and execution rechecks the durable deadline.
 
 Do not enable the internal UI on a public deployment.

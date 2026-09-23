@@ -6,7 +6,8 @@ import uuid
 import pytest
 
 from support_chatbot.auth import Identity, reset_identity, set_identity
-from support_chatbot.persistence import PostgresRepository
+from support_chatbot.config import settings
+from support_chatbot.persistence import InvalidWorkflowTransition, PostgresRepository
 from support_chatbot.workflow import system_identity
 
 
@@ -116,7 +117,8 @@ def test_postgres_workflow_is_idempotent_and_resumable():
             assert repository.claim_drafting(request["id"], 30) is not None
             assert repository.claim_drafting(request["id"], 30) is None
             repository.save_resolution_draft(
-                request["id"], "Proposed response", {"type": "send_resolution"}, 24
+                request["id"], "Proposed response", {"type": "send_resolution"},
+                settings.approval_deadlines,
             )
             repository.decide_support_request(
                 request["id"], True, "integration test",
@@ -146,6 +148,65 @@ def test_postgres_workflow_is_idempotent_and_resumable():
                 (str(request["id"]),),
             )
             connection.execute("delete from public.support_requests where id=%s", (request["id"],))
+        repository.logout(session_token)
+        repository.close()
+
+
+def test_postgres_absence_policy_is_durable_and_late_approval_fails_closed():
+    repository = PostgresRepository(os.environ.get("DATABASE_URL"))
+    key = f"absence-{uuid.uuid4().hex}"
+    request = None
+    identity, session_token = repository.login("raj@example.com", "RajDemo!2026")
+    identity_token = set_identity(identity)
+    try:
+        request, _ = repository.create_support_request("Please review this", "react", key)
+    finally:
+        reset_identity(identity_token)
+    try:
+        with system_identity():
+            repository.mark_enqueued(request["id"], "absence-integration")
+            repository.claim_drafting(request["id"], 30)
+            repository.save_resolution_draft(
+                request["id"], "Safe draft", {"type": "send_resolution"},
+                settings.approval_deadlines,
+            )
+            with repository.connection() as connection:
+                connection.execute("""update public.approval_tasks a set
+                    reminder_at=now()-interval '1 second',
+                    escalation_at=now()+interval '1 hour',expires_at=now()+interval '2 hours'
+                    from public.resolution_drafts d where a.resolution_draft_id=d.id
+                    and d.support_request_id=%s""", (request["id"],))
+            assert repository.process_absence_policy()["reminded"] == [request["id"]]
+            with repository.connection() as connection:
+                connection.execute("""update public.approval_tasks a set
+                    escalation_at=now()-interval '1 second'
+                    from public.resolution_drafts d where a.resolution_draft_id=d.id
+                    and d.support_request_id=%s""", (request["id"],))
+            assert repository.process_absence_policy()["escalated"] == [request["id"]]
+            detail = repository.get_approval_detail(request["id"])
+            assert detail["queue_name"] == "supervisor"
+            with repository.connection() as connection:
+                connection.execute("""update public.approval_tasks a set expires_at=now()-interval '1 second'
+                    from public.resolution_drafts d where a.resolution_draft_id=d.id
+                    and d.support_request_id=%s""", (request["id"],))
+            expiry = repository.process_absence_policy()
+            # A concurrently running application instance may win the same
+            # idempotent database sweep before this test process does.
+            assert expiry["expired"] in ([], [request["id"]])
+            assert repository.get_support_request(request["id"])["status"] == "COMPLETED_WITHOUT_ACTION"
+            with pytest.raises(InvalidWorkflowTransition):
+                repository.decide_support_request(
+                    request["id"], True, "late", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    review_necessary=True,
+                )
+    finally:
+        if request:
+            with repository.pool.connection() as connection:
+                connection.execute(
+                    "delete from public.audit_events where resource_type='support_request' and resource_id=%s",
+                    (str(request["id"]),),
+                )
+                connection.execute("delete from public.support_requests where id=%s", (request["id"],))
         repository.logout(session_token)
         repository.close()
 

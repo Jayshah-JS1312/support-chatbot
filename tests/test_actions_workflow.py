@@ -1,5 +1,7 @@
 """Two-party authorization and sealed privileged-action tests."""
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -127,3 +129,23 @@ def test_arguments_edited_after_approval_are_rejected(action_app):
     assert repository.support_requests[request_id]["last_error"] == "action_seal_mismatch"
     assert repository.orders["112-3333333-3333333"]["status"] == "preparing"
     assert repository.orders["112-1111111-1111111"]["status"] == "delivered"
+
+
+def test_privileged_action_does_not_execute_after_approval_deadline(action_app):
+    client, repository, _, coordinator = action_app
+    proposal = preview_cancel(client)
+    request_id = confirm(client, proposal, "expired-execution-001").json()["request_id"]
+    become_admin(client)
+    approved = client.post(f"/admin/requests/{request_id}/decision", json={
+        "decision": "approve", "reason": "Reviewed before deadline",
+        "review_necessary": True,
+    })
+    assert approved.status_code == 200
+    repository.support_requests[request_id]["expires_at"] = (
+        datetime.now(timezone.utc) - timedelta(seconds=1)
+    ).isoformat()
+
+    result = coordinator.execute(request_id)
+    assert result == {"duplicate": True, "state": "COMPLETED_WITHOUT_ACTION"}
+    assert repository.orders["112-3333333-3333333"]["status"] == "preparing"
+    assert repository.action_executions == {}

@@ -25,6 +25,8 @@ baseline.
 - Durable `202 Accepted` support requests orchestrated by Upstash Workflow
 - Human-approval state machine with retries, expiry, recovery, and dead letters
 - Admin approval inbox with filtering, editing, reassignment, and audit history
+- Fail-closed absence policy with reminders, supervisor escalation, hard expiry,
+  and accelerated 60/120/300-second demo timing
 - End-to-end idempotency for submissions, deliveries, and action execution
 - Cryptographically sealed cancellation/return proposals with optimistic revalidation
 - Operations dashboard plus health, readiness, and Prometheus metrics endpoints

@@ -17,3 +17,9 @@ def recover_workflows(request: Request, limit: int = Query(100, ge=1, le=500)):
 def expire_workflows(request: Request):
     expired = runtime(request).repository.expire_approvals()
     return {"expired": len(expired), "request_ids": expired}
+
+
+@router.post("/absence-policy")
+def apply_absence_policy(request: Request):
+    """Run the idempotent reminder/escalation/expiry sweep on demand."""
+    return runtime(request).workflow.apply_absence_policy()

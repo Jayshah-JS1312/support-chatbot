@@ -36,6 +36,8 @@ services:
       # deploying publicly unless the route sits behind authentication.
       SUPPORT_CHATBOT_EXPOSE_INTERNAL_UI: "true"
       SUPPORT_CHATBOT_SECURE_COOKIES: "false"
+      # Accelerated Phase 7 demonstration: remind 60s, escalate 120s, expire 300s.
+      SUPPORT_CHATBOT_ABSENCE_DEMO_MODE: "true"
       DATABASE_URL: postgresql://support_chatbot:support_chatbot@postgres:5432/support_chatbot
     ports:
       - "8000:8000"
