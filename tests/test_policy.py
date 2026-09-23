@@ -142,7 +142,7 @@ class TestGuardedRunConfirmation:
         assert work.pending["key"] == ["cancel_order", "o1"]
 
     def test_cancel_order_with_confirmation_runs_tool(self, fresh_store):
-        """Second call with confirmed=true runs the actual tool."""
+        """Second call creates a proposal but cannot execute the action."""
         work = WorkingMemory()
         work.turn = 1
         # First call to set pending
@@ -154,9 +154,11 @@ class TestGuardedRunConfirmation:
             {"order_id": "112-3333333-3333333", "confirmed": True},
             work,
         )
-        # Should have run the tool and cleared pending
+        # The confirmation is spent, but only a human-review proposal is produced.
         assert work.pending is None
-        assert result.get("cancelled") is True
+        assert result.get("proposal") is True
+        assert result.get("requires_human_approval") is True
+        assert fresh_store.get_order("112-3333333-3333333")["status"] == "preparing"
 
     def test_confirmation_must_span_turns(self, fresh_store):
         """A confirmation in the same turn as the request is ignored."""

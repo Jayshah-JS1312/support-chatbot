@@ -21,6 +21,7 @@ from datetime import date
 from support_chatbot import knowledge
 from support_chatbot import observe
 from support_chatbot import store
+from support_chatbot.actions import build_proposal
 
 # --------------------------------------------------------------------------
 # The tools themselves
@@ -70,7 +71,7 @@ def track_package(order_id):
 
 
 def cancel_order(order_id):
-    """Cancel an order — only allowed before it ships. GUARDRAIL."""
+    """Preview a cancellation; this tool never mutates an order."""
     order = store.get_order(order_id.strip())
     if not order:
         return {"error": f"No order found with id {order_id}."}
@@ -83,22 +84,12 @@ def cancel_order(order_id):
     if order["status"] == "cancelled":
         return {"error": f"Order {order_id} is already cancelled."}
 
-    try:
-        version = store.cancel(order["order_id"], order["version"])
-    except store.ConcurrentUpdateError:
-        return {"error": "This order changed while cancellation was being processed. Refresh its status and try again.", "retry": True}
-    if version is None:
-        return {"error": "The order is no longer cancellable. Refresh its status."}
-    return {
-        "cancelled": True,
-        "order_id": order["order_id"],
-        "refund_amount": order["price"],
-        "refund_eta": "3-5 business days to the original payment method",
-    }
+    proposal = build_proposal("cancel_order", {"order_id": order_id}, order)
+    return {"proposal": True, "requires_human_approval": True, **proposal}
 
 
 def start_return(order_id, reason):
-    """Open a return — only for delivered orders inside the return window. GUARDRAIL."""
+    """Preview a return; this tool never mutates an order."""
     order = store.get_order(order_id.strip())
     if not order:
         return {"error": f"No order found with id {order_id}."}
@@ -117,19 +108,8 @@ def start_return(order_id, reason):
                      f"A human agent can review an exception."
         }
 
-    try:
-        rma = store.start_return(order["order_id"], reason, order["version"])
-    except store.ConcurrentUpdateError:
-        return {"error": "This order changed while the return was being started. Refresh its status and try again.", "retry": True}
-    if rma is None:
-        return {"error": "The order is no longer return-eligible. Refresh its status."}
-    return {
-        "rma": rma,
-        "order_id": order["order_id"],
-        "refund_amount": order["price"],
-        "instructions": "Drop off at any UPS Store with the QR code emailed "
-                        "to you. Refund issues once we scan the item.",
-    }
+    proposal = build_proposal("start_return", {"order_id": order_id, "reason": reason}, order)
+    return {"proposal": True, "requires_human_approval": True, **proposal}
 
 
 def search_knowledge(question):
@@ -196,18 +176,17 @@ SCHEMAS = [
           ["order_id"]),
 
     _tool("cancel_order",
-          "Cancel an order that has not shipped yet and refund it. The first "
-          "call returns what would happen; ask the customer, then call again "
-          "with confirmed=true once they have said yes.",
+          "Preview cancellation consequences. Never executes cancellation. The first "
+          "call asks for customer confirmation; the confirmed call creates a proposal "
+          "that still requires human approval.",
           {"order_id": {"type": "string", "description": "Order number"},
            "confirmed": {"type": "boolean",
                          "description": "true only after the customer confirmed"}},
           ["order_id"]),
 
     _tool("start_return",
-          "Start a return for a delivered order and issue an RMA number. The "
-          "first call returns what would happen; ask the customer, then call "
-          "again with confirmed=true once they have said yes.",
+          "Preview a return for a delivered order. Never starts the return. The "
+          "confirmed proposal still requires human approval before execution.",
           {"order_id": {"type": "string", "description": "Order number"},
            "reason": {"type": "string",
                       "description": "Why the customer is returning it, in their words"},

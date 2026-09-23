@@ -52,6 +52,9 @@ deployment unless the route is protected by operator authentication.
 | `/trace.jsonl` | Raw agent events | authenticated admin only |
 | `POST /chat` | Store and enqueue a request; returns `202` | authenticated customer |
 | `GET /requests/{id}` | Poll an owned request | authenticated owner |
+| `POST /actions/preview` | Create a non-mutating sealed action preview | authenticated customer |
+| `POST /actions/proposals/{id}/confirm` | Confirm the exact seal and create an approval task; returns `202` | authenticated owner |
+| `POST /admin/requests/{id}/decision` | Approve or reject the sealed draft | authenticated admin |
 | `POST /workflow/requests` | Signed Upstash workflow delivery | QStash only |
 | `POST /workflow/recover` | Retry stored-but-unenqueued work | authenticated admin |
 | `POST /workflow/expire` | Apply the approval absence policy | authenticated admin |

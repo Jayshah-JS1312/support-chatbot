@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import threading
 import uuid
 from contextlib import contextmanager
@@ -56,6 +57,10 @@ class IdempotencyConflictError(RuntimeError):
 
 
 class InvalidWorkflowTransition(RuntimeError):
+    pass
+
+
+class ActionProposalError(RuntimeError):
     pass
 
 
@@ -334,6 +339,93 @@ class PostgresRepository:
                     raise IdempotencyConflictError(idempotency_key)
         return self._workflow_request(row), created
 
+    def create_action_proposal(self, action, arguments):
+        from support_chatbot.actions import build_proposal
+        identity = current_identity()
+        order = self.get_order(arguments.get("order_id", ""))
+        try:
+            proposal = build_proposal(action, arguments, order)
+        except ValueError as error:
+            raise ActionProposalError(str(error)) from error
+        with self.connection() as conn:
+            row = conn.execute(
+                """insert into public.action_proposals
+                (user_id,action_name,action_arguments,customer_consequences,
+                 policy_evidence,order_version,action_hash)
+                values(%s,%s,%s,%s,%s,%s,%s) returning *""",
+                (identity.user_id, action, Jsonb(proposal["arguments"]),
+                 Jsonb(proposal["consequences"]), Jsonb(proposal["policy_evidence"]),
+                 proposal["order_version"], proposal["action_hash"]),
+            ).fetchone()
+        result = proposal | {"proposal_id": str(row["id"]), "expires_at": row["expires_at"].isoformat()}
+        return result
+
+    def confirm_action_proposal(self, proposal_id, supplied_hash, idempotency_key):
+        identity = current_identity()
+        with self.connection() as conn:
+            proposal = conn.execute(
+                "select * from public.action_proposals where id=%s for update", (proposal_id,)
+            ).fetchone()
+            if not proposal:
+                raise ActionProposalError("Proposal not found")
+            if proposal["action_hash"] != supplied_hash:
+                raise ActionProposalError("Action hash does not match the preview")
+            existing = conn.execute(
+                "select * from public.support_requests where user_id=%s and idempotency_key=%s",
+                (identity.user_id, idempotency_key),
+            ).fetchone()
+            if existing:
+                if (existing["metadata"] or {}).get("action_hash") != supplied_hash:
+                    raise IdempotencyConflictError(idempotency_key)
+                return self._workflow_request(existing), False
+            if proposal["status"] != "previewed" or proposal["expires_at"] <= datetime.now(timezone.utc):
+                raise ActionProposalError("Proposal is expired or already confirmed")
+            order = conn.execute(
+                "select id from public.orders where order_number=%s",
+                (proposal["action_arguments"]["order_id"],),
+            ).fetchone()
+            reference = conn.execute(
+                "select 'REQ-' || nextval('public.support_reference_seq') as reference"
+            ).fetchone()["reference"]
+            payload_hash = hashlib.sha256(supplied_hash.encode()).hexdigest()
+            request = conn.execute(
+                """insert into public.support_requests
+                (reference_number,user_id,order_id,request_type,summary,status,metadata,
+                 idempotency_key,payload_hash)
+                values(%s,%s,%s,'privileged_action',%s,'AWAITING_APPROVAL',%s,%s,%s)
+                returning *""",
+                (reference, identity.user_id, order["id"],
+                 f"Confirmed proposal to {proposal['action_name']}",
+                 Jsonb({"proposal_id": str(proposal["id"]), "action_hash": supplied_hash}),
+                 idempotency_key, payload_hash),
+            ).fetchone()
+            content = (
+                f"Customer confirmed {proposal['action_name']} with consequences: "
+                f"{json.dumps(proposal['customer_consequences'], sort_keys=True)}"
+            )
+            draft = conn.execute(
+                """insert into public.resolution_drafts
+                (support_request_id,content,proposed_action,status,action_name,
+                 action_arguments,customer_consequences,policy_evidence,order_version,
+                 action_hash,customer_confirmed_at)
+                values(%s,%s,%s,'pending_approval',%s,%s,%s,%s,%s,%s,now()) returning id""",
+                (request["id"], content,
+                 Jsonb({"type": proposal["action_name"], "arguments": proposal["action_arguments"]}),
+                 proposal["action_name"], Jsonb(proposal["action_arguments"]),
+                 Jsonb(proposal["customer_consequences"]), Jsonb(proposal["policy_evidence"]),
+                 proposal["order_version"], supplied_hash),
+            ).fetchone()
+            conn.execute(
+                """insert into public.approval_tasks(resolution_draft_id,status,expires_at)
+                values(%s,'pending',now()+make_interval(hours => %s))""",
+                (draft["id"], settings.approval_ttl_hours),
+            )
+            conn.execute(
+                "update public.action_proposals set status='confirmed',customer_confirmed_at=now() where id=%s",
+                (proposal_id,),
+            )
+        return self._workflow_request(request), True
+
     @staticmethod
     def _workflow_request(row):
         if not row:
@@ -453,9 +545,11 @@ class PostgresRepository:
                 raise InvalidWorkflowTransition(request_id)
             conn.execute(
                 """update public.approval_tasks a set status=%s,assigned_to=%s,
-                decision_reason=%s,decided_at=now() from public.resolution_drafts d
+                decision_reason=%s,decided_at=now(),
+                approved_action_hash=case when %s then d.action_hash else null end
+                from public.resolution_drafts d
                 where a.resolution_draft_id=d.id and d.support_request_id=%s""",
-                (approval, admin_user_id, reason, request_id),
+                (approval, admin_user_id, reason, approve, request_id),
             )
             if not approve:
                 conn.execute("update public.support_requests set status='COMPLETED' where id=%s", (request_id,))
@@ -474,18 +568,99 @@ class PostgresRepository:
         return self._workflow_request(row)
 
     def complete_execution(self, request_id):
+        from support_chatbot.actions import action_hash
         key = f"support-request:{request_id}:execute"
         with self.connection() as conn:
             request = conn.execute("select * from public.support_requests where id=%s for update", (request_id,)).fetchone()
             if not request:
                 return None
-            draft = conn.execute("select content,proposed_action from public.resolution_drafts where support_request_id=%s", (request_id,)).fetchone()
-            conn.execute(
+            if request["status"] == "COMPLETED":
+                return self._workflow_request(request)
+            draft = conn.execute(
+                """select d.*,a.approved_action_hash from public.resolution_drafts d
+                join public.approval_tasks a on a.resolution_draft_id=d.id
+                where d.support_request_id=%s""", (request_id,),
+            ).fetchone()
+            action_name = draft["action_name"] or "send_resolution"
+            if action_name != "send_resolution":
+                recomputed = action_hash(
+                    action_name, dict(draft["action_arguments"]),
+                    dict(draft["customer_consequences"]), dict(draft["policy_evidence"]),
+                    draft["order_version"],
+                )
+                if not draft["customer_confirmed_at"] or recomputed != draft["action_hash"] \
+                        or recomputed != draft["approved_action_hash"]:
+                    conn.execute(
+                        """insert into public.action_executions
+                        (idempotency_key,user_id,support_request_id,order_id,action_type,
+                         status,request_payload,error_code,result_payload,finished_at)
+                        values(%s,%s,%s,%s,%s,'failed','{}'::jsonb,
+                         'action_seal_mismatch','{"error":"Action seal mismatch"}'::jsonb,now())
+                        on conflict(idempotency_key) do nothing""",
+                        (key, request["user_id"], request_id, request["order_id"], action_name),
+                    )
+                    row = conn.execute(
+                        """update public.support_requests set status='COMPLETED_WITHOUT_ACTION',
+                        last_error='action_seal_mismatch',completed_at=now(),
+                        processing_lease_until=null,updated_at=now()
+                        where id=%s returning *""", (request_id,),
+                    ).fetchone()
+                    return self._workflow_request(row)
+            inserted = conn.execute(
                 """insert into public.action_executions
-                (idempotency_key,user_id,support_request_id,action_type,status,request_payload,result_payload,finished_at)
-                values(%s,%s,%s,'send_resolution','succeeded',%s,%s,now())
-                on conflict(idempotency_key) do nothing""",
-                (key, request["user_id"], request_id, Jsonb(draft["proposed_action"] or {}), Jsonb({"response": draft["content"]})),
+                (idempotency_key,user_id,support_request_id,order_id,action_type,status,request_payload)
+                values(%s,%s,%s,%s,%s,'started',%s)
+                on conflict(idempotency_key) do nothing returning id""",
+                (key, request["user_id"], request_id, request["order_id"], action_name,
+                 Jsonb(draft["proposed_action"] or {})),
+            ).fetchone()
+            if not inserted:
+                return self._workflow_request(request)
+            result = {"response": draft["content"]}
+            stale = False
+            if action_name in {"cancel_order", "start_return"}:
+                order = conn.execute(
+                    "select * from public.orders where id=%s for update", (request["order_id"],)
+                ).fetchone()
+                expected_status = "preparing" if action_name == "cancel_order" else "delivered"
+                stale = not order or order["version"] != draft["order_version"] or order["status"] != expected_status
+                if not stale and action_name == "start_return":
+                    days = (date.today() - order["delivered_on"]).days
+                    stale = days > RETURN_WINDOW_DAYS
+                if not stale:
+                    new_status = "cancelled" if action_name == "cancel_order" else "return started"
+                    conn.execute(
+                        "update public.orders set status=%s,version=version+1,updated_at=now() where id=%s",
+                        (new_status, order["id"]),
+                    )
+                    if action_name == "cancel_order":
+                        result = {"cancelled": True, "refund_amount": float(order["price"])}
+                        detail = "Order cancelled after customer confirmation and human approval"
+                    else:
+                        rma = conn.execute(
+                            "select 'RMA-' || nextval('public.support_reference_seq') as reference"
+                        ).fetchone()["reference"]
+                        result = {"rma": rma, "refund_amount": float(order["price"])}
+                        detail = f"Return started after approval ({rma})"
+                    conn.execute(
+                        "insert into public.order_events(order_id,event_type,detail,metadata) values(%s,%s,%s,%s)",
+                        (order["id"], action_name, detail, Jsonb({"support_request_id": str(request_id)})),
+                    )
+            if stale:
+                conn.execute(
+                    """update public.action_executions set status='failed',error_code='stale_order',
+                    result_payload=%s,finished_at=now() where id=%s""",
+                    (Jsonb({"error": "Order changed after approval; no action executed"}), inserted["id"]),
+                )
+                row = conn.execute(
+                    """update public.support_requests set status='COMPLETED_WITHOUT_ACTION',
+                    last_error='stale_order',completed_at=now(),processing_lease_until=null,
+                    updated_at=now() where id=%s returning *""", (request_id,),
+                ).fetchone()
+                return self._workflow_request(row)
+            conn.execute(
+                """update public.action_executions set status='succeeded',result_payload=%s,
+                finished_at=now() where id=%s""", (Jsonb(result), inserted["id"]),
             )
             row = conn.execute(
                 """update public.support_requests set status='COMPLETED',completed_at=now(),
@@ -631,6 +806,7 @@ class InMemoryRepository:
         self.request_keys = {}
         self.action_executions = {}
         self.dead_letters = []
+        self.action_proposals = {}
 
     def healthcheck(self): return True
     def _visible(self, owner):
@@ -718,6 +894,45 @@ class InMemoryRepository:
                "proposed_action": None, "approval_status": None}
         self.support_requests[request_id] = row; self.request_keys[key] = request_id
         return copy.deepcopy(row), True
+    def create_action_proposal(self, action, arguments):
+        from support_chatbot.actions import build_proposal
+        identity = current_identity(); order = self.get_order(arguments.get("order_id", ""))
+        try: proposal = build_proposal(action, arguments, order)
+        except ValueError as error: raise ActionProposalError(str(error)) from error
+        proposal_id = str(uuid.uuid4())
+        row = proposal | {"proposal_id": proposal_id, "user_id": identity.user_id,
+                          "status": "previewed", "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()}
+        self.action_proposals[proposal_id] = row
+        return copy.deepcopy(row)
+    def confirm_action_proposal(self, proposal_id, supplied_hash, idempotency_key):
+        identity = current_identity(); proposal = self.action_proposals.get(str(proposal_id))
+        if not proposal or not self._visible(proposal["user_id"]): raise ActionProposalError("Proposal not found")
+        if proposal["action_hash"] != supplied_hash: raise ActionProposalError("Action hash does not match the preview")
+        key = (identity.user_id, idempotency_key); existing_id = self.request_keys.get(key)
+        if existing_id:
+            existing = self.support_requests[existing_id]
+            if existing["metadata"].get("action_hash") != supplied_hash: raise IdempotencyConflictError(idempotency_key)
+            return copy.deepcopy(existing), False
+        if proposal["status"] != "previewed": raise ActionProposalError("Proposal is expired or already confirmed")
+        request_id = str(uuid.uuid4())
+        row = {"id": request_id, "reference_number": f"REQ-{1001 + len(self.support_requests)}",
+               "user_id": identity.user_id, "summary": f"Confirmed proposal to {proposal['action']}",
+               "status": "AWAITING_APPROVAL", "metadata": {"proposal_id": proposal_id, "action_hash": supplied_hash},
+               "idempotency_key": idempotency_key, "payload_hash": hashlib.sha256(supplied_hash.encode()).hexdigest(),
+               "workflow_run_id": None, "enqueue_attempts": 0, "enqueued_at": None,
+               "next_enqueue_at": datetime.now(timezone.utc).isoformat(), "last_error": None,
+               "processing_lease_until": None, "draft_content": "Confirmed privileged action",
+               "proposed_action": {"type": proposal["action"], "arguments": proposal["arguments"]},
+               "action_name": proposal["action"], "action_arguments": copy.deepcopy(proposal["arguments"]),
+               "customer_consequences": copy.deepcopy(proposal["consequences"]),
+               "policy_evidence": copy.deepcopy(proposal["policy_evidence"]),
+               "order_version": proposal["order_version"], "action_hash": supplied_hash,
+               "customer_confirmed_at": datetime.now(timezone.utc).isoformat(),
+               "approval_status": "pending", "approved_action_hash": None,
+               "expires_at": (datetime.now(timezone.utc) + timedelta(hours=settings.approval_ttl_hours)).isoformat()}
+        self.support_requests[request_id] = row; self.request_keys[key] = request_id
+        proposal["status"] = "confirmed"
+        return copy.deepcopy(row), True
     def get_support_request(self, request_id):
         row = self.support_requests.get(str(request_id))
         return copy.deepcopy(row) if row and self._visible(row["user_id"]) else None
@@ -756,6 +971,7 @@ class InMemoryRepository:
         if row["status"] != "AWAITING_APPROVAL": raise InvalidWorkflowTransition(request_id)
         row.update({"status": target, "approval_status": "approved" if approve else "rejected",
                     "decision_reason": reason, "assigned_to": admin_user_id})
+        if approve: row["approved_action_hash"] = row.get("action_hash")
         return copy.deepcopy(row)
     def claim_execution(self, request_id, lease_seconds):
         row = self.support_requests.get(str(request_id))
@@ -763,10 +979,30 @@ class InMemoryRepository:
         row["status"] = "EXECUTING"; row["processing_lease_until"] = (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)).isoformat()
         return copy.deepcopy(row)
     def complete_execution(self, request_id):
+        from support_chatbot.actions import action_hash
         row = self.support_requests.get(str(request_id))
         if not row: return None
         key = f"support-request:{request_id}:execute"
-        self.action_executions.setdefault(key, {"response": row.get("draft_content")})
+        if key in self.action_executions: return copy.deepcopy(row)
+        action = row.get("action_name")
+        if action:
+            computed = action_hash(action, row["action_arguments"], row["customer_consequences"], row["policy_evidence"], row["order_version"])
+            if not row.get("customer_confirmed_at") or computed != row.get("action_hash") or computed != row.get("approved_action_hash"):
+                self.action_executions[key] = {
+                    "status": "failed", "error": "action_seal_mismatch"
+                }
+                row["status"] = "COMPLETED_WITHOUT_ACTION"
+                row["last_error"] = "action_seal_mismatch"
+                return copy.deepcopy(row)
+            order = self.orders.get(row["action_arguments"]["order_id"])
+            expected = "preparing" if action == "cancel_order" else "delivered"
+            if not order or order["version"] != row["order_version"] or order["status"] != expected:
+                self.action_executions[key] = {"status": "failed", "error": "stale_order"}
+                row["status"] = "COMPLETED_WITHOUT_ACTION"; row["last_error"] = "stale_order"
+                return copy.deepcopy(row)
+            order["status"] = "cancelled" if action == "cancel_order" else "return started"
+            order["version"] += 1
+        self.action_executions[key] = {"status": "succeeded", "response": row.get("draft_content")}
         if row["status"] == "EXECUTING": row["status"] = "COMPLETED"
         return copy.deepcopy(row)
     def expire_approvals(self):

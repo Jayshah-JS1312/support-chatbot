@@ -12,7 +12,7 @@ baseline.
 - ReAct and plan-and-execute planners
 - Order lookup, tracking, cancellation, return, knowledge, and escalation tools
 - Separate conversation, working, and customer memory
-- Confirmation gates for state-changing actions
+- Customer-confirmation and human-approval gates for state-changing actions
 - Card-number redaction, injection signalling, and output identifier checks
 - A local ChromaDB knowledge index using `bge-micro-v2`
 - Browser and terminal interfaces
@@ -25,6 +25,7 @@ baseline.
 - Durable `202 Accepted` support requests orchestrated by Upstash Workflow
 - Human-approval state machine with retries, expiry, recovery, and dead letters
 - End-to-end idempotency for submissions, deliveries, and action execution
+- Cryptographically sealed cancellation/return proposals with optimistic revalidation
 - Operations dashboard plus health, readiness, and Prometheus metrics endpoints
 - Deterministic retrieval-evaluation dashboard with versioned test cases
 - Deterministic unit tests and opt-in live LLM evaluations
@@ -125,6 +126,8 @@ and [security](SECURITY.md) before exposing the service beyond localhost.
 
 The repository now has a FastAPI/Uvicorn service, durable PostgreSQL business
 state, customer/admin authentication, ownership isolation, and an asynchronous
-human-approval workflow. It is not ready for real customer traffic until the
-operator approval UI, encrypted customer-data operations, rate limiting,
+human-approval workflow. Privileged actions are previewed, customer-confirmed,
+cryptographically sealed, human-approved, and revalidated immediately before
+exactly-once execution. It is not ready for real customer traffic until the
+operator queue UI, encrypted customer-data operations, rate limiting,
 TLS/reverse-proxy configuration, and email-based reset delivery are complete.

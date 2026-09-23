@@ -33,20 +33,21 @@ its state until the process or container is restarted.
 
 ## State-changing conversations
 
-7. **Successful cancellation (two turns):**
-   - “Cancel order 112-3333333-3333333.”
-   - “Yes, cancel it.”
-   Expected: the first turn asks for confirmation; only the second executes it.
+7. **Successful cancellation (two approvals):** preview cancellation of
+   `112-3333333-3333333`, confirm the returned action hash, then approve the
+   resulting request as the admin.
+   Expected: preview and customer confirmation do not change the order. Only
+   the later human-approved execution cancels it and creates one execution row.
 8. **Ambiguous confirmation:** after the cancellation preview, say “Maybe later.”
    Expected: no cancellation.
 9. **Shipped cancellation:**
    - “Cancel 112-2222222-2222222.”
    - “Yes, go ahead.”
    Expected: refusal because it shipped; suggest returning it after delivery.
-10. **Successful return (two turns):**
-    - “Return 112-1111111-1111111 because the headphones are uncomfortable.”
-    - “I confirm. Start the return.”
-    Expected: confirmation gate followed by an RMA and UPS instructions.
+10. **Successful return (two approvals):** preview a return for
+    `112-1111111-1111111` with a reason, confirm the exact action hash, and
+    approve it as the admin.
+    Expected: the RMA is created only after approved execution.
 11. **Return before delivery:** “Return order 112-3333333-3333333.”
     Expected: no RMA; offer cancellation instead.
 12. **Expired return:**

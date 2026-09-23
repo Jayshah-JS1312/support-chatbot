@@ -15,6 +15,16 @@
 7. Execution claims the request and inserts an action using a unique execution
    idempotency key before completing. Duplicate deliveries are safe no-ops.
 
+Cancellation and return requests add a stricter boundary before step 3. The
+customer first receives a non-mutating preview from `POST /actions/preview`.
+That preview contains the exact normalized arguments, customer consequences,
+policy evidence, and current order version. A canonical SHA-256 action hash
+seals those fields. `POST /actions/proposals/{id}/confirm` records an explicit
+customer confirmation and creates the approval task; it does not mutate the
+order. An admin decision stores the same hash, and execution recomputes and
+compares both seals before locking and revalidating the order. A changed order
+or mismatched seal completes without action.
+
 ## Boundaries
 
 - `agent_profile.py`: identity, scope, and response behavior
@@ -22,6 +32,7 @@
 - `plan_execute.py`: plan-first execution
 - `policy.py`: deterministic controls around model input, actions, and output
 - `tools.py`: model-facing tool schemas and dispatch
+- `actions.py`: privileged-action previews and canonical cryptographic seals
 - `store.py`: model-tool facade over the durable commerce repository
 - `persistence.py`: pooled PostgreSQL access and atomic state transitions
 - `memory.py`: conversation and working-memory models plus durable customer-memory facade
@@ -104,9 +115,10 @@ under `supabase/migrations/`; the Docker migration job applies every new file
 exactly once.
 
 Order mutations use `orders.version` for optimistic concurrency control. The
-status and expected version are checked in the same SQL update; a stale worker
-cannot overwrite a newer action. The order event and action execution are
-committed in the same transaction as the status change.
+status, return window, and expected version are rechecked while holding the
+order lock immediately before execution; a stale approval cannot overwrite a
+newer action. The order event and unique action execution are committed in the
+same transaction as the status change.
 
 Only local telemetry/evaluation report files and the ChromaDB embedding cache
 remain filesystem-backed. They are not customer/business state. Application

@@ -50,11 +50,13 @@ class TestSeedData:
 class TestCancelGuardrail:
     """Cancellation has strict guardrails: only before it ships."""
 
-    def test_cancel_preparing_order_succeeds(self, fresh_store):
-        """A preparing order can be cancelled."""
+    def test_cancel_preparing_order_creates_preview(self, fresh_store):
+        """A preparing order can be previewed without changing its state."""
         result = tools.cancel_order("112-3333333-3333333")
-        assert result["cancelled"] is True
-        assert result["refund_amount"] == 149.99
+        assert result["proposal"] is True
+        assert result["action"] == "cancel_order"
+        assert result["consequences"]["refund_amount"] == 149.99
+        assert store.ORDERS["112-3333333-3333333"]["status"] == "preparing"
 
     def test_cancel_shipped_order_is_refused(self, fresh_store):
         """A shipped order cannot be cancelled — it must be returned."""
@@ -78,7 +80,7 @@ class TestCancelGuardrail:
 
     def test_cancel_already_cancelled_order_is_refused(self, fresh_store):
         """Once cancelled, it cannot be cancelled again."""
-        tools.cancel_order("112-3333333-3333333")
+        fresh_store.orders["112-3333333-3333333"]["status"] = "cancelled"
         result = tools.cancel_order("112-3333333-3333333")
         assert "error" in result
         assert "already cancelled" in result["error"]
@@ -87,14 +89,13 @@ class TestCancelGuardrail:
 class TestReturnGuardrail:
     """Returns need a delivered order inside the 30-day window."""
 
-    def test_return_delivered_order_succeeds(self, fresh_store):
-        """A delivered order within the window can be returned."""
+    def test_return_delivered_order_creates_preview(self, fresh_store):
+        """An eligible return can be previewed without changing its state."""
         result = tools.start_return("112-1111111-1111111", "item is broken")
-        assert "rma" in result
-        assert result["rma"].startswith("RMA-")
-        assert result["refund_amount"] == 348.00
-        # Verify the order status changed
-        assert store.ORDERS["112-1111111-1111111"]["status"] == "return started"
+        assert result["proposal"] is True
+        assert result["action"] == "start_return"
+        assert result["consequences"]["refund_amount"] == 348.00
+        assert store.ORDERS["112-1111111-1111111"]["status"] == "delivered"
 
     def test_return_nondelivered_order_is_refused(self, fresh_store):
         """A shipped (not delivered) order cannot be returned."""
@@ -121,14 +122,12 @@ class TestReturnGuardrail:
         assert "error" in result
         assert "No order found" in result["error"]
 
-    def test_multiple_returns_create_unique_rmas(self, fresh_store):
-        """Each return gets a distinct RMA number."""
+    def test_repeated_return_previews_have_stable_hash(self, fresh_store):
+        """Equivalent previews are sealed to the same canonical action."""
         result1 = tools.start_return("112-1111111-1111111", "broken")
-        result2 = tools.start_return("112-2222222-2222222", "wrong item")
-        # This second one will fail because it's shipped, but let's try another delivered one
-        # Actually, we only have one more delivered order in the window. Let's skip this test
-        # or test it differently.
-        assert result1["rma"] != "RMA-0"  # at least one was created
+        result2 = tools.start_return("112-1111111-1111111", "broken")
+        assert result1["action_hash"] == result2["action_hash"]
+        assert store.RETURNS == {}
 
 
 class TestReturnWindowDays:
@@ -139,11 +138,8 @@ class TestReturnWindowDays:
 
 
 class TestReturnsTracking:
-    """When a return starts, it is tracked in RETURNS."""
+    """A preview does not create execution state."""
 
-    def test_return_is_recorded(self, fresh_store):
-        result = tools.start_return("112-1111111-1111111", "not as described")
-        rma = result["rma"]
-        assert rma in store.RETURNS
-        assert store.RETURNS[rma]["order_id"] == "112-1111111-1111111"
-        assert store.RETURNS[rma]["reason"] == "not as described"
+    def test_return_preview_is_not_recorded_as_execution(self, fresh_store):
+        tools.start_return("112-1111111-1111111", "not as described")
+        assert store.RETURNS == {}

@@ -161,20 +161,24 @@ class TestTrackPackage:
 class TestCancelOrder:
     """cancel_order has guardrails tested in test_store.py."""
 
-    def test_cancel_order_returns_refund_details(self, fresh_store):
+    def test_cancel_order_returns_sealed_preview_without_mutation(self, fresh_store):
         result = tools.cancel_order("112-3333333-3333333")
-        assert result["cancelled"] is True
-        assert "refund_amount" in result
-        assert "refund_eta" in result
+        assert result["proposal"] is True
+        assert result["requires_human_approval"] is True
+        assert result["consequences"]["refund_amount"] == 149.99
+        assert len(result["action_hash"]) == 64
+        assert fresh_store.get_order("112-3333333-3333333")["status"] == "preparing"
 
 
 class TestStartReturn:
     """start_return has guardrails tested in test_store.py."""
 
-    def test_start_return_returns_rma_and_instructions(self, fresh_store):
+    def test_start_return_returns_preview_without_rma(self, fresh_store):
         result = tools.start_return("112-1111111-1111111", "broken screen")
-        assert "rma" in result
-        assert "instructions" in result
+        assert result["proposal"] is True
+        assert result["action"] == "start_return"
+        assert "rma" not in result
+        assert fresh_store.get_order("112-1111111-1111111")["status"] == "delivered"
 
 
 class TestSearchKnowledge:

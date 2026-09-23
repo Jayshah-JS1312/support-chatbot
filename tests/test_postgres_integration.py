@@ -24,7 +24,7 @@ def test_all_phase_two_tables_exist():
         "resolution_drafts", "approval_tasks", "action_executions",
         "audit_events", "evaluation_runs", "evaluation_results",
         "auth_sessions", "password_reset_tokens",
-        "workflow_dead_letters",
+        "workflow_dead_letters", "action_proposals",
     }
     try:
         with repository.pool.connection() as connection:
@@ -49,9 +49,9 @@ def test_customer_resources_require_owners_and_rls_is_enabled():
                 join pg_namespace on pg_namespace.oid=pg_class.relnamespace
                 where nspname='public' and relname in
                 ('profiles','orders','conversations','messages','support_requests',
-                 'auth_sessions','password_reset_tokens')""").fetchall()
+                 'auth_sessions','password_reset_tokens','action_proposals')""").fetchall()
         assert nullable == []
-        assert len(rls) == 7
+        assert len(rls) == 8
         assert all(row["relrowsecurity"] for row in rls)
     finally:
         repository.close()
@@ -134,5 +134,59 @@ def test_postgres_workflow_is_idempotent_and_resumable():
     finally:
         with repository.pool.connection() as connection:
             connection.execute("delete from public.support_requests where id=%s", (request["id"],))
+        repository.logout(session_token)
+        repository.close()
+
+
+def test_postgres_sealed_action_executes_once_after_both_approvals():
+    repository = PostgresRepository(os.environ.get("DATABASE_URL"))
+    key = f"sealed-{uuid.uuid4().hex}"
+    request = proposal = None
+    identity, session_token = repository.login("mei@example.com", "MeiDemo!2026")
+    identity_token = set_identity(identity)
+    try:
+        proposal = repository.create_action_proposal(
+            "cancel_order", {"order_id": "112-3333333-3333333"}
+        )
+        request, created = repository.confirm_action_proposal(
+            proposal["proposal_id"], proposal["action_hash"], key
+        )
+        assert created is True
+        assert request["status"] == "AWAITING_APPROVAL"
+        assert repository.get_order("112-3333333-3333333")["status"] == "preparing"
+    finally:
+        reset_identity(identity_token)
+    try:
+        with system_identity():
+            repository.decide_support_request(
+                request["id"], True, "sealed action verified",
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            )
+            assert repository.claim_execution(request["id"], 30) is not None
+            first = repository.complete_execution(request["id"])
+            second = repository.complete_execution(request["id"])
+            assert first["status"] == second["status"] == "COMPLETED"
+            assert repository.get_order("112-3333333-3333333")["status"] == "cancelled"
+            with repository.connection() as connection:
+                count = connection.execute(
+                    "select count(*) as n from public.action_executions where idempotency_key=%s",
+                    (f"support-request:{request['id']}:execute",),
+                ).fetchone()["n"]
+            assert count == 1
+    finally:
+        with repository.pool.connection() as connection:
+            if request:
+                connection.execute("delete from public.support_requests where id=%s", (request["id"],))
+            if proposal:
+                connection.execute("delete from public.action_proposals where id=%s", (proposal["proposal_id"],))
+            connection.execute(
+                """delete from public.order_events where order_id=(
+                    select id from public.orders where order_number='112-3333333-3333333'
+                ) and metadata->>'support_request_id'=%s""",
+                (request["id"] if request else "",),
+            )
+            connection.execute(
+                "update public.orders set status='preparing',version=1 where order_number='112-3333333-3333333'"
+            )
         repository.logout(session_token)
         repository.close()

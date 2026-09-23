@@ -4,13 +4,20 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from support_chatbot.api.dependencies import (
+    require_user,
     runtime,
     session,
     set_session_cookie,
 )
-from support_chatbot.api.models import ChatRequest, FeedbackRequest, ResetRequest
+from support_chatbot.api.models import (
+    ActionConfirmationRequest,
+    ActionPreviewRequest,
+    ChatRequest,
+    FeedbackRequest,
+    ResetRequest,
+)
 from support_chatbot.api.runtime import CHAT_PAGE
-from support_chatbot.persistence import IdempotencyConflictError
+from support_chatbot.persistence import ActionProposalError, IdempotencyConflictError
 
 
 router = APIRouter(tags=["customer"])
@@ -116,3 +123,32 @@ def request_status(request_id: str, request: Request, context=Depends(session)):
     if not row:
         raise HTTPException(status_code=404, detail="Request not found")
     return _customer_request(row)
+
+
+@router.post("/actions/preview")
+def preview_action(payload: ActionPreviewRequest, request: Request, _=Depends(require_user)):
+    arguments = {"order_id": payload.order_id}
+    if payload.reason is not None:
+        arguments["reason"] = payload.reason
+    try:
+        return runtime(request).repository.create_action_proposal(payload.action, arguments)
+    except ActionProposalError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post("/actions/proposals/{proposal_id}/confirm", status_code=202)
+def confirm_action(
+    proposal_id: str,
+    payload: ActionConfirmationRequest,
+    request: Request,
+    _=Depends(require_user),
+):
+    try:
+        row, created = runtime(request).repository.confirm_action_proposal(
+            proposal_id, payload.action_hash, payload.idempotency_key
+        )
+    except IdempotencyConflictError as error:
+        raise HTTPException(status_code=409, detail="Idempotency key conflict") from error
+    except ActionProposalError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return _customer_request(row, created=created)
