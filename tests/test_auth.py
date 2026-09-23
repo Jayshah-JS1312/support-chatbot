@@ -34,6 +34,20 @@ def test_customer_receives_403_on_every_admin_surface():
             assert client.get(path).status_code == 403
 
 
+def test_request_history_is_scoped_to_authenticated_customer():
+    repository = get_repository()
+    with client_for(repository) as client:
+        assert login(client).status_code == 200
+        client.get("/")
+        created = client.post("/chat", json={"message": "Raj private request", "planner": "react"},
+                              headers={"Idempotency-Key": "raj-private-history"})
+        request_id = created.json()["request_id"]
+        client.post("/auth/logout")
+        assert login(client, "mei@example.com", "MeiDemo!2026").status_code == 200
+        history = client.get("/requests").json()["items"]
+        assert request_id not in {item["request_id"] for item in history}
+
+
 def test_admin_can_open_monitoring_and_evaluations():
     original = settings.expose_internal_ui
     object.__setattr__(settings, "expose_internal_ui", True)

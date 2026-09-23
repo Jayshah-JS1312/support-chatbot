@@ -55,6 +55,12 @@ def test_customer_page_mints_securely_scoped_session_cookie(api_client):
     assert "sid=" in cookie
     assert "HttpOnly" in cookie
     assert "SameSite=lax" in cookie
+    for label in (
+        "Request received", "Drafting resolution", "Waiting for human review",
+        "Approved", "Executing", "Completed", "Rejected", "Expired",
+        "Retry status",
+    ):
+        assert label in response.text
 
 
 def test_state_preserves_session_across_requests(api_client):
@@ -133,6 +139,36 @@ def test_request_is_persisted_before_enqueue_and_returns_accepted(api_client):
     assert body["enqueue_status"] == "queued"
     assert runtime.workflow.dispatcher.calls == [(body["request_id"], "draft")]
     assert runtime.repository.support_requests[body["request_id"]]["summary"] == "Please help me"
+
+
+def test_customer_can_restore_durable_request_status(api_client):
+    client, runtime = api_client
+    response = client.post(
+        "/chat",
+        json={"message": "Track my order", "planner": "react"},
+        headers={"Idempotency-Key": "restore-request-status"},
+    )
+    request_id = response.json()["request_id"]
+
+    restored = client.get("/requests?limit=100")
+
+    assert restored.status_code == 200
+    item = next(row for row in restored.json()["items"] if row["request_id"] == request_id)
+    assert item["reference"].startswith("REQ-")
+    assert item["message"] == "Track my order"
+    assert item["state"] == "QUEUED"
+    assert item["action"] == {
+        "required": False, "name": None, "pending": False, "complete": False,
+    }
+
+    runtime.repository.support_requests[request_id].update({
+        "status": "COMPLETED", "approval_status": "rejected",
+        "draft_content": "This draft must not be shown as completed.",
+    })
+    rejected = client.get(f"/requests/{request_id}").json()
+    assert rejected["state"] == "REJECTED"
+    assert "No action was taken" in rejected["reply"]
+    assert "must not be shown" not in rejected["reply"]
 
 
 def test_reset_clears_the_current_conversation(api_client):

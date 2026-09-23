@@ -76,6 +76,7 @@ def test_postgres_round_trips_a_conversation():
         loaded = repository.load_session(sid)
         assert loaded["history"][-1]["content"] == "Hi, how can I help?"
         assert loaded["work"]["turn"] == 1
+        assert repository.latest_session_id("11111111-1111-4111-8111-111111111111") == sid
     finally:
         reset_identity(identity_token)
         with repository.pool.connection() as connection:
@@ -109,6 +110,7 @@ def test_postgres_workflow_is_idempotent_and_resumable():
         duplicate, duplicate_created = repository.create_support_request("Please help", "react", key)
         assert created is True and duplicate_created is False
         assert duplicate["id"] == request["id"]
+        assert request["id"] in {row["id"] for row in repository.list_support_requests()}
     finally:
         reset_identity(identity_token)
     try:

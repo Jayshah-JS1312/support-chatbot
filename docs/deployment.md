@@ -56,6 +56,7 @@ deployment unless the route is protected by operator authentication.
 | `/evals` | Retrieval evaluation dashboard | authenticated admin only |
 | `/trace.jsonl` | Raw agent events | authenticated admin only |
 | `POST /chat` | Store and enqueue a request; returns `202` | authenticated customer |
+| `GET /requests` | Restore the customer's recent ticket timeline | authenticated owner |
 | `GET /requests/{id}` | Poll an owned request | authenticated owner |
 | `POST /actions/preview` | Create a non-mutating sealed action preview | authenticated customer |
 | `POST /actions/proposals/{id}/confirm` | Confirm the exact seal and create an approval task; returns `202` | authenticated owner |

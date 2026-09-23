@@ -265,7 +265,7 @@ def test_late_approval_is_409_and_cannot_revive_request(workflow_setup):
     })
     customer_status = client.get(f"/requests/{request_id}")
     assert customer_status.status_code == 200
-    assert customer_status.json()["state"] == "COMPLETED_WITHOUT_ACTION"
+    assert customer_status.json()["state"] == "EXPIRED"
     assert "No action was taken" in customer_status.json()["status_message"]
 
 

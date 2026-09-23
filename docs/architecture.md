@@ -87,6 +87,14 @@ the reviewer to label whether human review was genuinely necessary. Approval,
 response edits, rejection, reassignment, reviewer identity, and timestamps are
 durably audited.
 
+The customer UI restores its ticket timeline from `GET /requests`, not browser
+memory. Each card polls `GET /requests/{id}` and distinguishes received,
+drafting, human review, approved-but-not-executed, executing, completed,
+rejected, and expired states. Draft content is returned as a customer answer
+only after the request reaches `COMPLETED`; approval alone never appears as a
+successful account action. The latest owned conversation is restored when the
+browser session cookie is missing.
+
 ## Authentication and authorization
 
 Passwords are bcrypt-hashed. The browser receives an opaque `HttpOnly`,

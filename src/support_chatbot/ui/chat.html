@@ -115,6 +115,28 @@
       color:#1c1305; background:var(--accent); font-size:18px; font-weight:800; }
     .send:hover { background:var(--accent-strong); } .send:disabled { opacity:.45; cursor:not-allowed; }
     .composer-note { max-width:780px; margin:7px auto 0; color:#718096; font-size:10px; text-align:center; }
+    .workflow-card { min-width:min(560px,100%); padding:0!important; overflow:hidden; }
+    .workflow-head { display:flex; align-items:flex-start; justify-content:space-between; gap:14px;
+      padding:14px 15px 11px; border-bottom:1px solid var(--line); }
+    .workflow-id { color:var(--muted); font:10px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .workflow-state { display:flex; align-items:center; gap:7px; font-weight:750; }
+    .workflow-state::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--accent); }
+    .workflow-state.complete::before { background:var(--success); }
+    .workflow-state.failed::before { background:var(--danger); }
+    .workflow-body { padding:12px 15px 14px; }
+    .workflow-detail { margin:0 0 11px; color:#c4cfdd; }
+    .workflow-steps { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:5px; margin:0; padding:0; list-style:none; }
+    .workflow-steps li { min-width:0; color:#718096; font-size:9px; line-height:1.3; }
+    .workflow-steps li::before { content:""; display:block; height:3px; margin-bottom:5px; border-radius:9px; background:var(--line); }
+    .workflow-steps li.done { color:#bfcadb; } .workflow-steps li.done::before { background:var(--accent); }
+    .workflow-steps li.current { color:var(--text); font-weight:700; }
+    .workflow-steps li.current::before { background:var(--accent-strong); }
+    .workflow-foot { display:flex; justify-content:space-between; gap:10px; align-items:center; margin-top:12px;
+      color:var(--muted); font-size:10px; }
+    .workflow-result { margin-top:12px; padding-top:12px; border-top:1px solid var(--line); color:var(--text); }
+    .retry-status { color:var(--danger); }
+    .retry-button { min-height:30px; padding:4px 9px; color:var(--text); background:var(--surface-3);
+      border:1px solid var(--line-strong); border-radius:8px; }
     .inspector { height:100%; min-height:0; overflow:hidden; border-left:1px solid var(--line);
       display:flex; flex-direction:column; }
     body.internal-disabled .shell { grid-template-columns:260px minmax(420px,1fr); }
@@ -164,6 +186,7 @@
       #chat { padding:18px 13px; } .welcome { margin-top:2vh; }
       .suggestions { grid-template-columns:1fr; } .message-body { max-width:85%; }
       .composer-wrap { padding:10px 10px calc(12px + env(safe-area-inset-bottom)); }
+      .workflow-card { min-width:0; } .workflow-steps { grid-template-columns:repeat(3,1fr); row-gap:9px; }
     }
     @media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; } }
   </style>
@@ -239,15 +262,65 @@
 </main>
 <script>
 const GREETING=__GREETING__,INTERNAL_ENABLED=__INTERNAL_ENABLED__,$=id=>document.getElementById(id);
+const TERMINAL=new Set(['COMPLETED','REJECTED','EXPIRED','COMPLETED_WITHOUT_ACTION']);
+const STAGES=['RECEIVED','DRAFTING','AWAITING_APPROVAL','APPROVED','EXECUTING','COMPLETED'];
+const STAGE_LABELS=['Received','Drafting','Human review','Approved','Executing','Completed'];
+const STATE_COPY={
+  RECEIVED:['Request received','Your request is safely stored and waiting to be drafted.'],
+  QUEUED:['Drafting resolution','Ami is preparing a resolution for human review.'],
+  DRAFTING:['Drafting resolution','Ami is preparing a resolution for human review.'],
+  AWAITING_APPROVAL:['Waiting for human review','A support specialist must review this before anything is sent or changed.'],
+  APPROVED:['Approved','Human review is complete. Any approved action is still pending execution.'],
+  EXECUTING:['Executing','The approved action is being applied. It is not complete yet.'],
+  COMPLETED:['Completed','The reviewed request and any approved action completed successfully.'],
+  REJECTED:['Rejected','A support specialist rejected the proposal. No action was taken.'],
+  EXPIRED:['Expired','Human approval did not arrive before the deadline. No action was taken.'],
+  COMPLETED_WITHOUT_ACTION:['Not completed','The request closed safely without performing the proposed action.']
+};
 let lastAgentResponse='',sending=false;
+const activePolls=new Set(),requestData=new Map(),requestBubbles=new Map();
 if(!INTERNAL_ENABLED)document.body.classList.add('internal-disabled');
 function render(text){const safe=String(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');return safe.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')}
 function hideWelcome(){const welcome=$('welcome');if(welcome)welcome.remove()}
 function addMessage(role,text,pending=false){hideWelcome();const item=document.createElement('article');item.className='message '+role;item.innerHTML='<div class="message-avatar"></div><div class="message-body"><div class="message-meta"></div><div class="bubble"></div></div>';item.querySelector('.message-avatar').textContent=role==='customer'?'YOU':'A';item.querySelector('.message-meta').textContent=role==='customer'?'You':'Ami';const bubble=item.querySelector('.bubble');if(pending){bubble.className+=' typing';bubble.setAttribute('aria-label','Ami is thinking');bubble.innerHTML='<i></i><i></i><i></i>'}else bubble.innerHTML=render(text);$('chat').append(item);$('chat').scrollTop=$('chat').scrollHeight;return item}
 function drawActivity(data){const container=$('activity');container.innerHTML='';for(const action of data.actions||[]){const escalated=action.startsWith('Escalated'),item=document.createElement('div');item.className='activity-item'+(escalated?' escalated':'');item.innerHTML='<div class="activity-icon">'+(escalated?'↗':'✓')+'</div><div><strong></strong><span></span></div>';item.querySelector('strong').textContent=escalated?'Conversation handed to a human':'Account action completed';item.querySelector('span').textContent=escalated?`Ticket ${data.escalation||'created'} · Expect an email within 24 hours.`:action;container.append(item)}}
 function draw(data){drawActivity(data);if(!INTERNAL_ENABLED)return;$('nmsg').textContent=data.messages??0;$('nord').textContent=data.orders??0;$('tkt').textContent=data.escalation||'—';$('wm').textContent=data.working||'(empty)';$('ltm').textContent=data.longterm||'First conversation with this customer.';const steps=$('steps');steps.innerHTML='';if(!data.steps?.length){steps.className='empty';steps.textContent='No tools called this turn.';return}steps.className='';for(const step of data.steps){const item=document.createElement('div');item.className='step';item.innerHTML='<div class="step-label"></div><pre></pre>';item.querySelector('.step-label').textContent=`Step ${step.n} · ${step.tool}`;item.querySelector('pre').textContent=`${JSON.stringify(step.args)}\n${JSON.stringify(step.observation)}`;steps.append(item)}}
-async function pollRequest(id,bubble){for(let attempt=0;attempt<900;attempt++){await new Promise(resolve=>setTimeout(resolve,2000));const response=await fetch(`/requests/${id}`,{cache:'no-store'});if(!response.ok)return;const data=await response.json();if(data.state==='COMPLETED'){bubble.innerHTML=render(data.reply||'Your request was reviewed and completed.');lastAgentResponse=data.reply||'';const state=await fetch('/state',{cache:'no-store'});if(state.ok)draw({...await state.json(),steps:[]});return}if(data.state==='COMPLETED_WITHOUT_ACTION'){bubble.textContent=data.reply;return}if(data.status_message)bubble.textContent=data.status_message;else if(data.state==='AWAITING_APPROVAL')bubble.textContent='Ami prepared a resolution. It is waiting for a human support specialist to approve it.';else bubble.textContent=`Request ${data.reference} is ${data.state.toLowerCase().replaceAll('_',' ')}.`}}
-async function sendMessage(text){text=text.trim();if(!text||sending)return;sending=true;$('sendButton').disabled=true;addMessage('customer',text);const pending=addMessage('ami','',true);try{const response=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:JSON.stringify({message:text,planner:$('planner').value})});if(!response.ok)throw new Error();const data=await response.json(),bubble=pending.querySelector('.bubble');bubble.classList.remove('typing');bubble.removeAttribute('aria-label');bubble.textContent=data.enqueue_status==='queued'?`Request ${data.reference} was queued. Ami is drafting a resolution for human review.`:`Request ${data.reference} was saved and will be queued automatically when delivery recovers.`;pollRequest(data.request_id,bubble)}catch(error){const bubble=pending.querySelector('.bubble');bubble.classList.remove('typing');bubble.textContent='I lost the connection. Please check that the service is running and try again.'}finally{sending=false;$('sendButton').disabled=false;$('messageInput').focus()}}
+function normalizedState(state){return state==='QUEUED'?'DRAFTING':state}
+function stageRank(state){state=normalizedState(state);if(['REJECTED','EXPIRED'].includes(state))return 2;if(state==='COMPLETED_WITHOUT_ACTION')return 4;const rank=STAGES.indexOf(state);return rank<0?0:rank}
+function actionCopy(data){if(!data.action?.required)return'Response workflow · no account action';if(data.action.complete)return'Account action complete';if(['REJECTED','EXPIRED','COMPLETED_WITHOUT_ACTION'].includes(data.state))return'Account action not performed';return'Account action pending'}
+function workflowBubble(data){const item=addMessage('ami','');const bubble=item.querySelector('.bubble');bubble.classList.add('workflow-card');bubble.dataset.requestId=data.request_id;requestBubbles.set(data.request_id,bubble);return bubble}
+function renderWorkflow(bubble,data,connection='online'){
+  requestData.set(data.request_id,data);bubble.classList.remove('typing');bubble.removeAttribute('aria-label');bubble.textContent='';
+  const state=normalizedState(data.state),copy=STATE_COPY[state]||[state.replaceAll('_',' '),'Status updated.'];
+  const head=document.createElement('div');head.className='workflow-head';
+  const identity=document.createElement('div');identity.innerHTML='<div class="workflow-id"></div><div class="workflow-state"></div>';
+  identity.querySelector('.workflow-id').textContent=`Ticket ${data.reference} · ${data.request_id}`;
+  const stateNode=identity.querySelector('.workflow-state');stateNode.textContent=connection==='offline'?'Connection interrupted':copy[0];
+  stateNode.classList.toggle('complete',state==='COMPLETED');stateNode.classList.toggle('failed',['REJECTED','EXPIRED','COMPLETED_WITHOUT_ACTION'].includes(state)||connection==='offline');
+  head.append(identity);bubble.append(head);
+  const body=document.createElement('div');body.className='workflow-body';const detail=document.createElement('p');detail.className='workflow-detail';
+  detail.textContent=connection==='offline'?'Ami could not refresh this ticket. The request remains safely stored; reconnect to retrieve its current status.':(data.status_message||copy[1]);body.append(detail);
+  const steps=document.createElement('ol');steps.className='workflow-steps';const rank=stageRank(state);
+  STAGE_LABELS.forEach((label,index)=>{const step=document.createElement('li');step.textContent=label;if(index<rank||state==='COMPLETED')step.classList.add('done');if(index===rank&&state!=='COMPLETED')step.classList.add('current');steps.append(step)});body.append(steps);
+  const foot=document.createElement('div');foot.className='workflow-foot';const action=document.createElement('span');action.textContent=actionCopy(data);foot.append(action);
+  if(connection==='offline'){const retry=document.createElement('button');retry.type='button';retry.className='retry-button';retry.textContent='Retry status';retry.onclick=()=>refreshRequest(data.request_id,true);foot.append(retry)}
+  else if(data.retrying){const retrying=document.createElement('span');retrying.className='retry-status';retrying.textContent='Delivery retry pending';foot.append(retrying)}
+  body.append(foot);
+  if(TERMINAL.has(state)&&data.reply){const result=document.createElement('div');result.className='workflow-result';result.innerHTML=render(data.reply);body.append(result);if(state==='COMPLETED')lastAgentResponse=data.reply}
+  bubble.append(body);$('chat').scrollTop=$('chat').scrollHeight;
+}
+async function refreshRequest(id,manual=false){
+  const bubble=requestBubbles.get(id),previous=requestData.get(id);if(!bubble||!previous)return'offline';
+  if(manual)renderWorkflow(bubble,previous,'checking');
+  try{const response=await fetch(`/requests/${id}`,{cache:'no-store'});if(!response.ok)throw new Error(`status ${response.status}`);const data=await response.json();renderWorkflow(bubble,data);return TERMINAL.has(normalizedState(data.state))?'done':'pending'}
+  catch(error){renderWorkflow(bubble,previous,'offline');return'offline'}
+}
+async function pollRequest(id,bubble){
+  if(activePolls.has(id))return;activePolls.add(id);let failures=0;
+  try{while(!TERMINAL.has(normalizedState(requestData.get(id)?.state))){await new Promise(resolve=>setTimeout(resolve,failures?Math.min(10000,2000*2**failures):2000));const result=await refreshRequest(id);if(result==='done')break;failures=result==='offline'?(navigator.onLine?Math.min(failures+1,3):3):0}}
+  finally{activePolls.delete(id)}
+}
+async function sendMessage(text){text=text.trim();if(!text||sending)return;sending=true;$('sendButton').disabled=true;addMessage('customer',text);const pending=addMessage('ami','',true);try{const response=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:JSON.stringify({message:text,planner:$('planner').value})});if(!response.ok)throw new Error();const data=await response.json(),bubble=pending.querySelector('.bubble');bubble.classList.add('workflow-card');bubble.dataset.requestId=data.request_id;requestBubbles.set(data.request_id,bubble);renderWorkflow(bubble,data);pollRequest(data.request_id,bubble)}catch(error){const bubble=pending.querySelector('.bubble');bubble.classList.remove('typing');bubble.classList.add('workflow-card');bubble.textContent='The request could not be submitted. Check your connection and try sending it again.'}finally{sending=false;$('sendButton').disabled=false;$('messageInput').focus()}}
 $('composer').addEventListener('submit',event=>{event.preventDefault();const text=$('messageInput').value;$('messageInput').value='';$('messageInput').style.height='auto';sendMessage(text)});
 $('messageInput').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();$('composer').requestSubmit()}});
 $('messageInput').addEventListener('input',event=>{event.target.style.height='auto';event.target.style.height=Math.min(event.target.scrollHeight,140)+'px'});
@@ -256,7 +329,14 @@ async function resetConversation(){if(sending)return;const response=await fetch(
 async function submitFeedback(){const corrected=$('fbCorrected').value.trim(),status=$('feedbackStatus');if(!lastAgentResponse||!corrected){status.textContent='Chat first, then provide the corrected answer.';return}const response=await fetch('/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({original_response:lastAgentResponse,corrected_response:corrected,reason:$('fbReason').value.trim(),golden_row_id:null})}),data=await response.json();status.textContent=data.ok?'Correction saved. Thank you.':(data.message||'Could not save feedback.');if(data.ok){$('fbCorrected').value='';$('fbReason').value=''}}
 async function logout(){await fetch('/auth/logout',{method:'POST'});location.href='/login'}
 fetch('/auth/me').then(r=>r.json()).then(data=>{if(data.user?.role!=='admin')document.querySelectorAll('.monitor-link').forEach(link=>link.remove())});
-fetch('/state',{cache:'no-store'}).then(response=>response.json()).then(data=>{draw({...data,steps:[]});if(data.stale){addMessage('ami','This browser’s earlier session is no longer available. Please start a new conversation.');return}if(data.transcript?.length){$('chat').innerHTML='';for(const message of data.transcript)addMessage(message.role==='user'?'customer':'ami',message.content);const replies=data.transcript.filter(message=>message.role==='assistant');lastAgentResponse=replies.at(-1)?.content||''}}).catch(()=>{});
+async function restoreCustomerWorkspace(){
+  const [stateResult,requestsResult]=await Promise.allSettled([fetch('/state',{cache:'no-store'}),fetch('/requests?limit=100',{cache:'no-store'})]);
+  if(stateResult.status==='fulfilled'&&stateResult.value.ok){const state=await stateResult.value.json();draw({...state,steps:[]})}
+  if(requestsResult.status==='fulfilled'&&requestsResult.value.ok){const data=await requestsResult.value.json();if(data.items.length){$('chat').innerHTML='';for(const item of data.items){addMessage('customer',item.message||'Support request');const bubble=workflowBubble(item);renderWorkflow(bubble,item);if(!TERMINAL.has(normalizedState(item.state)))pollRequest(item.request_id,bubble)}return}}
+  if(stateResult.status==='fulfilled'&&stateResult.value.ok){const state=await fetch('/state',{cache:'no-store'}).then(r=>r.json());if(state.transcript?.length){$('chat').innerHTML='';for(const message of state.transcript)addMessage(message.role==='user'?'customer':'ami',message.content);const replies=state.transcript.filter(message=>message.role==='assistant');lastAgentResponse=replies.at(-1)?.content||''}}
+}
+window.addEventListener('online',()=>{for(const [id,bubble] of requestBubbles){if(!TERMINAL.has(normalizedState(requestData.get(id)?.state))){refreshRequest(id,true);pollRequest(id,bubble)}}});
+restoreCustomerWorkspace().catch(()=>addMessage('ami','I could not restore ticket status. Check your connection and refresh to try again.'));
 </script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 """Customer-facing asynchronous requests, session, reset, and feedback."""
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from support_chatbot.api.dependencies import (
@@ -74,22 +74,57 @@ def submit_feedback(
 
 
 def _customer_request(row, *, created=False, enqueued=None):
+    approval_status = row.get("approval_status")
+    if approval_status == "rejected":
+        public_state = "REJECTED"
+    elif approval_status == "expired":
+        public_state = "EXPIRED"
+    else:
+        public_state = row["status"]
+    proposed_action = row.get("proposed_action") or {}
+    action_name = row.get("action_name") or proposed_action.get("type") or "send_resolution"
+    action_required = action_name != "send_resolution"
     result = {
         "request_id": row["id"],
         "reference": row["reference_number"],
-        "state": row["status"],
+        "message": row.get("summary"),
+        "state": public_state,
+        "raw_state": row["status"],
         "created": created,
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "action": {
+            "required": action_required,
+            "name": action_name if action_required else None,
+            "pending": action_required and public_state not in {"COMPLETED", "REJECTED", "EXPIRED"},
+            "complete": action_required and public_state == "COMPLETED",
+        },
     }
     status_message = (row.get("metadata") or {}).get("customer_status")
     if status_message:
         result["status_message"] = status_message
     if enqueued is not None:
         result["enqueue_status"] = "queued" if enqueued else "pending_recovery"
-    if row["status"] == "COMPLETED":
+    if row.get("last_error") and row["status"] in {"RECEIVED", "QUEUED"}:
+        result["retrying"] = True
+    if public_state == "COMPLETED":
         result["reply"] = row.get("draft_content")
-    elif row["status"] == "COMPLETED_WITHOUT_ACTION":
+    elif public_state == "REJECTED":
+        result["reply"] = "A support specialist rejected this resolution. No action was taken."
+    elif public_state == "EXPIRED" or row["status"] == "COMPLETED_WITHOUT_ACTION":
         result["reply"] = status_message or "This request expired without an approved action. Please submit it again."
     return result
+
+
+@router.get("/requests")
+def recent_requests(
+    request: Request,
+    limit: int = Query(50, ge=1, le=100),
+    context=Depends(session),
+):
+    del context
+    rows = runtime(request).repository.list_support_requests(limit)
+    return {"items": [_customer_request(row) for row in rows]}
 
 
 @router.post("/chat", status_code=202)

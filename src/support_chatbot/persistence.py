@@ -465,6 +465,18 @@ class PostgresRepository:
             ).fetchone()
         return self._workflow_request(row)
 
+    def list_support_requests(self, limit=50):
+        with self.connection() as conn:
+            rows = conn.execute(
+                """select r.*,d.content as draft_content,d.proposed_action,d.action_name,
+                a.status as approval_status,a.decision_reason,a.expires_at
+                from public.support_requests r
+                left join public.resolution_drafts d on d.support_request_id=r.id
+                left join public.approval_tasks a on a.resolution_draft_id=d.id
+                order by r.created_at desc limit %s""", (limit,),
+            ).fetchall()
+        return [self._workflow_request(row) for row in reversed(rows)]
+
     def get_request_agent_context(self, request_id):
         with self.connection() as conn:
             row = conn.execute("""select p.id,p.email,p.display_name,p.role,
@@ -989,6 +1001,12 @@ class PostgresRepository:
         with self.connection() as conn:
             return conn.execute("select exists(select 1 from public.conversations where browser_session_id=%s) as found", (sid,)).fetchone()["found"]
 
+    def latest_session_id(self, user_id):
+        with self.connection() as conn:
+            row = conn.execute("""select browser_session_id from public.conversations
+                where user_id=%s order by updated_at desc limit 1""", (user_id,)).fetchone()
+        return row["browser_session_id"] if row else None
+
     def create_session(self, sid, work, user_id=None):
         identity = current_identity()
         owner = user_id or (identity.user_id if identity else None)
@@ -1235,6 +1253,9 @@ class InMemoryRepository:
     def get_support_request(self, request_id):
         row = self.support_requests.get(str(request_id))
         return copy.deepcopy(row) if row and self._visible(row["user_id"]) else None
+    def list_support_requests(self, limit=50):
+        rows = [row for row in self.support_requests.values() if self._visible(row["user_id"])]
+        return copy.deepcopy(rows[-limit:])
     def get_request_agent_context(self, request_id):
         row = self.support_requests.get(str(request_id))
         if not row: return None
@@ -1447,6 +1468,9 @@ class InMemoryRepository:
         entry = {"request_id": str(request_id), "workflow_run_id": workflow_run_id, "status": status, "body": body, "headers": headers}
         if entry not in self.dead_letters: self.dead_letters.append(entry)
     def session_exists(self, sid): return sid in self.sessions
+    def latest_session_id(self, user_id):
+        matches = [sid for sid, value in self.sessions.items() if value.get("user_id") == user_id]
+        return matches[-1] if matches else None
     def create_session(self, sid, work, user_id=None):
         identity = current_identity(); owner = user_id or (identity.user_id if identity else None)
         self.sessions.setdefault(sid, {"history": [], "work": copy.deepcopy(work), "user_id": owner})
@@ -1456,7 +1480,9 @@ class InMemoryRepository:
     def save_session(self, sid, history, work, planner="react"):
         identity = current_identity(); previous = self.sessions.get(sid)
         if previous and not self._visible(previous.get("user_id")): return
-        self.sessions[sid] = {"history": copy.deepcopy(history), "work": copy.deepcopy(work), "planner": planner, "user_id": identity.user_id if identity else None}
+        self.sessions[sid] = {"history": copy.deepcopy(history), "work": copy.deepcopy(work),
+                              "planner": planner,
+                              "user_id": identity.user_id if identity else (previous or {}).get("user_id")}
     def reset_session(self, sid, work): self.sessions[sid] = {"history": [], "work": copy.deepcopy(work)}
     def remember(self, work, session_id):
         email = work.get("customer_email")

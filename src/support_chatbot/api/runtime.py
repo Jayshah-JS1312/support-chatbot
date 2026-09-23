@@ -64,11 +64,15 @@ class RuntimeState:
     def get_session(self, cookie_sid=None, user_id=None):
         """Resolve a browser session and replace unknown stale identifiers."""
         with self.session_lock:
-            cached = self.sessions.get(cookie_sid)
+            restored_sid = None
+            if not cookie_sid and user_id:
+                restored_sid = self.repository.latest_session_id(user_id)
+            candidate_sid = cookie_sid or restored_sid
+            cached = self.sessions.get(candidate_sid)
             cache_owned = bool(cached and cached.get("user_id") == user_id)
-            persisted = self.repository.load_session(cookie_sid) if cookie_sid and not cache_owned else None
+            persisted = self.repository.load_session(candidate_sid) if candidate_sid and not cache_owned else None
             stale = bool(cookie_sid) and not cache_owned and persisted is None
-            sid = cookie_sid
+            sid = candidate_sid
             created = False
             if not cache_owned:
                 if persisted:
@@ -79,6 +83,7 @@ class RuntimeState:
                         "work": WorkingMemory.from_dict(persisted["work"]),
                         "user_id": user_id,
                     }
+                    created = not bool(cookie_sid)
                 else:
                     sid = uuid.uuid4().hex
                     self.sessions[sid] = self.new_session(user_id)
