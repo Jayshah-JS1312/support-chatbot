@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import threading
 import uuid
 from contextlib import contextmanager
@@ -47,6 +48,14 @@ class AuthenticationError(RuntimeError):
 
 
 class DuplicateEmailError(RuntimeError):
+    pass
+
+
+class IdempotencyConflictError(RuntimeError):
+    pass
+
+
+class InvalidWorkflowTransition(RuntimeError):
     pass
 
 
@@ -293,6 +302,230 @@ class PostgresRepository:
                 values(%s,%s,'escalation',%s,'open')""", (ref, identity.user_id, summary))
         return ref
 
+    def create_support_request(self, summary, planner, idempotency_key, session_id=None):
+        identity = current_identity()
+        payload_hash = hashlib.sha256(f"{planner}\0{summary}".encode()).hexdigest()
+        with self.connection() as conn:
+            conversation = None
+            if session_id:
+                conversation = conn.execute(
+                    "select id from public.conversations where browser_session_id=%s",
+                    (session_id,),
+                ).fetchone()
+            reference = conn.execute(
+                "select 'REQ-' || nextval('public.support_reference_seq') as reference"
+            ).fetchone()["reference"]
+            row = conn.execute(
+                """insert into public.support_requests
+                (reference_number,user_id,conversation_id,request_type,summary,status,
+                 metadata,idempotency_key,payload_hash)
+                values(%s,%s,%s,'customer_message',%s,'RECEIVED',%s,%s,%s)
+                on conflict(user_id,idempotency_key) do nothing returning *""",
+                (reference, identity.user_id, conversation["id"] if conversation else None,
+                 summary, Jsonb({"planner": planner}), idempotency_key, payload_hash),
+            ).fetchone()
+            created = row is not None
+            if not row:
+                row = conn.execute(
+                    "select * from public.support_requests where user_id=%s and idempotency_key=%s",
+                    (identity.user_id, idempotency_key),
+                ).fetchone()
+                if row["payload_hash"] != payload_hash:
+                    raise IdempotencyConflictError(idempotency_key)
+        return self._workflow_request(row), created
+
+    @staticmethod
+    def _workflow_request(row):
+        if not row:
+            return None
+        result = dict(row)
+        for key in ("id", "user_id", "conversation_id", "order_id"):
+            if result.get(key) is not None:
+                result[key] = str(result[key])
+        for key, value in list(result.items()):
+            if isinstance(value, datetime):
+                result[key] = value.isoformat()
+        result["metadata"] = dict(result.get("metadata") or {})
+        return result
+
+    def get_support_request(self, request_id):
+        with self.connection() as conn:
+            row = conn.execute(
+                """select r.*, d.content as draft_content, d.proposed_action,
+                a.status as approval_status, a.decision_reason, a.expires_at
+                from public.support_requests r
+                left join public.resolution_drafts d on d.support_request_id=r.id
+                left join public.approval_tasks a on a.resolution_draft_id=d.id
+                where r.id=%s""", (request_id,),
+            ).fetchone()
+        return self._workflow_request(row)
+
+    def mark_enqueued(self, request_id, workflow_run_id):
+        with self.connection() as conn:
+            row = conn.execute(
+                """update public.support_requests set
+                status=case when status='RECEIVED' then 'QUEUED' else status end,
+                workflow_run_id=%s,enqueued_at=now(),last_error=null,updated_at=now()
+                where id=%s and status in ('RECEIVED','QUEUED','APPROVED') returning *""",
+                (workflow_run_id, request_id),
+            ).fetchone()
+        return self._workflow_request(row)
+
+    def mark_enqueue_failed(self, request_id, error):
+        with self.connection() as conn:
+            row = conn.execute(
+                """update public.support_requests set enqueue_attempts=enqueue_attempts+1,
+                next_enqueue_at=now() + make_interval(
+                  secs => least(300, power(2, least(enqueue_attempts, 8))::int)
+                ),
+                last_error=%s,updated_at=now() where id=%s
+                and status in ('RECEIVED','APPROVED') returning *""",
+                (str(error)[:500], request_id),
+            ).fetchone()
+        return self._workflow_request(row)
+
+    def pending_enqueues(self, limit=100):
+        with self.connection() as conn:
+            rows = conn.execute(
+                """select * from public.support_requests
+                where status in ('RECEIVED','APPROVED') and next_enqueue_at<=now()
+                order by created_at for update skip locked limit %s""", (limit,),
+            ).fetchall()
+        return [self._workflow_request(row) for row in rows]
+
+    def claim_drafting(self, request_id, lease_seconds):
+        with self.connection() as conn:
+            row = conn.execute(
+                """update public.support_requests set status='DRAFTING',
+                processing_lease_until=now()+make_interval(secs => %s),updated_at=now()
+                where id=%s and (status in ('RECEIVED','QUEUED') or
+                (status='DRAFTING' and processing_lease_until<now())) returning *""",
+                (lease_seconds, request_id),
+            ).fetchone()
+        return self._workflow_request(row)
+
+    def save_resolution_draft(self, request_id, content, proposed_action, approval_ttl_hours):
+        with self.connection() as conn:
+            request = conn.execute(
+                "select * from public.support_requests where id=%s for update", (request_id,)
+            ).fetchone()
+            if not request:
+                return None
+            draft = conn.execute(
+                """insert into public.resolution_drafts
+                (support_request_id,content,proposed_action,status)
+                values(%s,%s,%s,'pending_approval')
+                on conflict(support_request_id) do update set
+                content=excluded.content,proposed_action=excluded.proposed_action,
+                status='pending_approval',version=resolution_drafts.version+1,updated_at=now()
+                returning id""", (request_id, content, Jsonb(proposed_action)),
+            ).fetchone()
+            conn.execute(
+                """insert into public.approval_tasks(resolution_draft_id,status,expires_at)
+                values(%s,'pending',now()+make_interval(hours => %s))
+                on conflict(resolution_draft_id) do update set status='pending',
+                expires_at=excluded.expires_at,decision_reason=null,decided_at=null""",
+                (draft["id"], approval_ttl_hours),
+            )
+            row = conn.execute(
+                """update public.support_requests set status='AWAITING_APPROVAL',
+                processing_lease_until=null,updated_at=now() where id=%s
+                and status='DRAFTING' returning *""", (request_id,),
+            ).fetchone()
+        return self._workflow_request(row)
+
+    def decide_support_request(self, request_id, approve, reason, admin_user_id):
+        target = "APPROVED" if approve else "REJECTED"
+        approval = "approved" if approve else "rejected"
+        with self.connection() as conn:
+            row = conn.execute(
+                """update public.support_requests set status=%s,
+                enqueued_at=case when %s then null else enqueued_at end,
+                next_enqueue_at=case when %s then now() else next_enqueue_at end,
+                completed_at=case when %s then null else now() end,updated_at=now()
+                where id=%s and status='AWAITING_APPROVAL' returning *""",
+                (target, approve, approve, approve, request_id),
+            ).fetchone()
+            if not row:
+                existing = conn.execute("select * from public.support_requests where id=%s", (request_id,)).fetchone()
+                if existing and existing["status"] == target:
+                    return self._workflow_request(existing)
+                raise InvalidWorkflowTransition(request_id)
+            conn.execute(
+                """update public.approval_tasks a set status=%s,assigned_to=%s,
+                decision_reason=%s,decided_at=now() from public.resolution_drafts d
+                where a.resolution_draft_id=d.id and d.support_request_id=%s""",
+                (approval, admin_user_id, reason, request_id),
+            )
+            if not approve:
+                conn.execute("update public.support_requests set status='COMPLETED' where id=%s", (request_id,))
+                row["status"] = "COMPLETED"
+        return self._workflow_request(row)
+
+    def claim_execution(self, request_id, lease_seconds):
+        with self.connection() as conn:
+            row = conn.execute(
+                """update public.support_requests set status='EXECUTING',
+                processing_lease_until=now()+make_interval(secs => %s),updated_at=now()
+                where id=%s and (status='APPROVED' or
+                (status='EXECUTING' and processing_lease_until<now())) returning *""",
+                (lease_seconds, request_id),
+            ).fetchone()
+        return self._workflow_request(row)
+
+    def complete_execution(self, request_id):
+        key = f"support-request:{request_id}:execute"
+        with self.connection() as conn:
+            request = conn.execute("select * from public.support_requests where id=%s for update", (request_id,)).fetchone()
+            if not request:
+                return None
+            draft = conn.execute("select content,proposed_action from public.resolution_drafts where support_request_id=%s", (request_id,)).fetchone()
+            conn.execute(
+                """insert into public.action_executions
+                (idempotency_key,user_id,support_request_id,action_type,status,request_payload,result_payload,finished_at)
+                values(%s,%s,%s,'send_resolution','succeeded',%s,%s,now())
+                on conflict(idempotency_key) do nothing""",
+                (key, request["user_id"], request_id, Jsonb(draft["proposed_action"] or {}), Jsonb({"response": draft["content"]})),
+            )
+            row = conn.execute(
+                """update public.support_requests set status='COMPLETED',completed_at=now(),
+                processing_lease_until=null,updated_at=now() where id=%s
+                and status in ('EXECUTING','COMPLETED') returning *""", (request_id,),
+            ).fetchone()
+        return self._workflow_request(row)
+
+    def expire_approvals(self):
+        with self.connection() as conn:
+            rows = conn.execute(
+                """with expired as (
+                  update public.approval_tasks set status='expired',decided_at=now()
+                  where status='pending' and expires_at<=now() returning resolution_draft_id
+                ), requests as (
+                  update public.support_requests r set status='EXPIRED',updated_at=now()
+                  from public.resolution_drafts d, expired e where d.id=e.resolution_draft_id
+                  and r.id=d.support_request_id and r.status='AWAITING_APPROVAL' returning r.id
+                ) update public.support_requests r set status='COMPLETED_WITHOUT_ACTION',
+                  completed_at=now(),updated_at=now() from requests x where r.id=x.id returning r.id"""
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
+
+    def record_dead_letter(self, request_id, workflow_run_id, status, body, headers):
+        with self.connection() as conn:
+            conn.execute(
+                """insert into public.workflow_dead_letters
+                (support_request_id,workflow_run_id,failure_status,failure_body,failure_headers)
+                values(%s,%s,%s,%s,%s) on conflict(support_request_id,workflow_run_id)
+                do update set failure_status=excluded.failure_status,
+                failure_body=excluded.failure_body,failure_headers=excluded.failure_headers""",
+                (request_id, workflow_run_id, status, body[:4000], Jsonb(headers)),
+            )
+            conn.execute(
+                """update public.support_requests set last_error=%s,
+                processing_lease_until=null,next_enqueue_at=now(),updated_at=now()
+                where id=%s and status not in ('COMPLETED','COMPLETED_WITHOUT_ACTION')""",
+                (f"workflow dead-letter: {status}", request_id),
+            )
+
     def session_exists(self, sid):
         with self.connection() as conn:
             return conn.execute("select exists(select 1 from public.conversations where browser_session_id=%s) as found", (sid,)).fetchone()["found"]
@@ -394,6 +627,10 @@ class InMemoryRepository:
         self.reset_tokens = {}
         self.memories = {}
         self.feedback = []
+        self.support_requests = {}
+        self.request_keys = {}
+        self.action_executions = {}
+        self.dead_letters = []
 
     def healthcheck(self): return True
     def _visible(self, owner):
@@ -461,6 +698,87 @@ class InMemoryRepository:
         order["status"], order["version"] = "return started", order["version"] + 1
         return reference
     def create_escalation(self, summary): return f"ESC-{4417 + len(self.feedback)}"
+    def create_support_request(self, summary, planner, idempotency_key, session_id=None):
+        identity = current_identity()
+        payload_hash = hashlib.sha256(f"{planner}\0{summary}".encode()).hexdigest()
+        key = (identity.user_id, idempotency_key)
+        existing_id = self.request_keys.get(key)
+        if existing_id:
+            existing = self.support_requests[existing_id]
+            if existing["payload_hash"] != payload_hash: raise IdempotencyConflictError(idempotency_key)
+            return copy.deepcopy(existing), False
+        request_id = str(uuid.uuid4())
+        row = {"id": request_id, "reference_number": f"REQ-{1001 + len(self.support_requests)}",
+               "user_id": identity.user_id, "conversation_id": session_id,
+               "summary": summary, "status": "RECEIVED", "metadata": {"planner": planner},
+               "idempotency_key": idempotency_key, "payload_hash": payload_hash,
+               "workflow_run_id": None, "enqueue_attempts": 0, "enqueued_at": None,
+               "next_enqueue_at": datetime.now(timezone.utc).isoformat(), "last_error": None,
+               "processing_lease_until": None, "draft_content": None,
+               "proposed_action": None, "approval_status": None}
+        self.support_requests[request_id] = row; self.request_keys[key] = request_id
+        return copy.deepcopy(row), True
+    def get_support_request(self, request_id):
+        row = self.support_requests.get(str(request_id))
+        return copy.deepcopy(row) if row and self._visible(row["user_id"]) else None
+    def mark_enqueued(self, request_id, workflow_run_id):
+        row = self.support_requests.get(str(request_id))
+        if not row or row["status"] not in {"RECEIVED", "QUEUED", "APPROVED"}: return None
+        if row["status"] == "RECEIVED": row["status"] = "QUEUED"
+        row["workflow_run_id"] = workflow_run_id; row["enqueued_at"] = datetime.now(timezone.utc).isoformat(); row["last_error"] = None
+        return copy.deepcopy(row)
+    def mark_enqueue_failed(self, request_id, error):
+        row = self.support_requests.get(str(request_id))
+        if not row: return None
+        row["enqueue_attempts"] += 1; row["last_error"] = str(error)[:500]
+        row["next_enqueue_at"] = datetime.now(timezone.utc).isoformat()
+        return copy.deepcopy(row)
+    def pending_enqueues(self, limit=100):
+        return [copy.deepcopy(row) for row in self.support_requests.values()
+                if row["status"] in {"RECEIVED", "APPROVED"}][:limit]
+    def claim_drafting(self, request_id, lease_seconds):
+        row = self.support_requests.get(str(request_id))
+        if not row or row["status"] not in {"RECEIVED", "QUEUED"}: return None
+        row["status"] = "DRAFTING"; row["processing_lease_until"] = (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)).isoformat()
+        return copy.deepcopy(row)
+    def save_resolution_draft(self, request_id, content, proposed_action, approval_ttl_hours):
+        row = self.support_requests.get(str(request_id))
+        if not row or row["status"] != "DRAFTING": return None
+        row.update({"status": "AWAITING_APPROVAL", "draft_content": content,
+                    "proposed_action": copy.deepcopy(proposed_action), "approval_status": "pending",
+                    "expires_at": (datetime.now(timezone.utc) + timedelta(hours=approval_ttl_hours)).isoformat(),
+                    "processing_lease_until": None})
+        return copy.deepcopy(row)
+    def decide_support_request(self, request_id, approve, reason, admin_user_id):
+        row = self.support_requests.get(str(request_id)); target = "APPROVED" if approve else "COMPLETED"
+        if not row: raise InvalidWorkflowTransition(request_id)
+        if row["status"] == target: return copy.deepcopy(row)
+        if row["status"] != "AWAITING_APPROVAL": raise InvalidWorkflowTransition(request_id)
+        row.update({"status": target, "approval_status": "approved" if approve else "rejected",
+                    "decision_reason": reason, "assigned_to": admin_user_id})
+        return copy.deepcopy(row)
+    def claim_execution(self, request_id, lease_seconds):
+        row = self.support_requests.get(str(request_id))
+        if not row or row["status"] != "APPROVED": return None
+        row["status"] = "EXECUTING"; row["processing_lease_until"] = (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)).isoformat()
+        return copy.deepcopy(row)
+    def complete_execution(self, request_id):
+        row = self.support_requests.get(str(request_id))
+        if not row: return None
+        key = f"support-request:{request_id}:execute"
+        self.action_executions.setdefault(key, {"response": row.get("draft_content")})
+        if row["status"] == "EXECUTING": row["status"] = "COMPLETED"
+        return copy.deepcopy(row)
+    def expire_approvals(self):
+        expired = []
+        now = datetime.now(timezone.utc)
+        for row in self.support_requests.values():
+            if row["status"] == "AWAITING_APPROVAL" and datetime.fromisoformat(row["expires_at"]) <= now:
+                row["status"] = "COMPLETED_WITHOUT_ACTION"; row["approval_status"] = "expired"; expired.append(row["id"])
+        return expired
+    def record_dead_letter(self, request_id, workflow_run_id, status, body, headers):
+        entry = {"request_id": str(request_id), "workflow_run_id": workflow_run_id, "status": status, "body": body, "headers": headers}
+        if entry not in self.dead_letters: self.dead_letters.append(entry)
     def session_exists(self, sid): return sid in self.sessions
     def create_session(self, sid, work, user_id=None):
         identity = current_identity(); owner = user_id or (identity.user_id if identity else None)

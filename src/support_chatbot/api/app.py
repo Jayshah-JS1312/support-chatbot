@@ -18,6 +18,7 @@ from support_chatbot.api.routes import (
 from support_chatbot.api.runtime import RuntimeState
 from support_chatbot.api.auth_middleware import AuthenticationMiddleware
 from support_chatbot.config import settings
+from support_chatbot.workflow import configure_upstash_workflow
 
 
 _SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
@@ -184,4 +185,5 @@ def create_app(runtime_state=None):
     app.include_router(workflow_callbacks.router)
     app.include_router(observability.router)
     app.include_router(observability.evaluation_router)
+    configure_upstash_workflow(app)
     return app

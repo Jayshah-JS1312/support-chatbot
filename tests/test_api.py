@@ -4,16 +4,28 @@ import pytest
 from fastapi.testclient import TestClient
 
 from support_chatbot.api.app import create_app
-from support_chatbot.api.routes import customer
 from support_chatbot.api.runtime import RuntimeState
 from support_chatbot.persistence import get_repository
+from support_chatbot.workflow import WorkflowCoordinator
+
+
+class RecordingDispatcher:
+    def __init__(self, repository):
+        self.repository = repository
+        self.calls = []
+
+    def enqueue(self, request_id, phase):
+        assert request_id in self.repository.support_requests
+        self.calls.append((request_id, phase))
+        return f"wfr-{request_id}"
 
 
 @pytest.fixture
 def api_client(tmp_path):
     repository = get_repository()
     repository.enforce_auth = True
-    runtime = RuntimeState(repository)
+    dispatcher = RecordingDispatcher(repository)
+    runtime = RuntimeState(repository, WorkflowCoordinator(repository, dispatcher))
     with TestClient(create_app(runtime)) as client:
         login = client.post(
             "/auth/login",
@@ -71,7 +83,7 @@ def test_unknown_cookie_is_reported_as_stale_and_replaced(api_client):
 def test_chat_rejects_unknown_planner_with_structured_error(api_client):
     client, _ = api_client
 
-    response = client.post("/chat", json={"message": "hello", "planner": "magic"})
+    response = client.post("/chat", json={"message": "hello", "planner": "magic"}, headers={"Idempotency-Key": "planner-test"})
 
     assert response.status_code == 422
     body = response.json()["error"]
@@ -86,7 +98,7 @@ def test_malformed_json_has_structured_validation_error(api_client):
     response = client.post(
         "/chat",
         content="{not-json",
-        headers={"content-type": "application/json"},
+        headers={"content-type": "application/json", "Idempotency-Key": "malformed-test"},
     )
 
     assert response.status_code == 422
@@ -106,43 +118,26 @@ def test_request_larger_than_limit_is_rejected_before_routing(api_client):
     assert response.json()["error"]["code"] == "request_too_large"
 
 
-def test_only_sanitized_agent_response_is_persisted(api_client, monkeypatch):
+def test_request_is_persisted_before_enqueue_and_returns_accepted(api_client):
     client, runtime = api_client
-    raw_reply = "Your new ticket is ESC-999999."
-    safe_reply = "Your new ticket is [unverified]."
-
-    def fake_planner(convo, work, **kwargs):
-        del work, kwargs
-        convo.add_assistant({"role": "assistant", "content": raw_reply})
-        return raw_reply
-
-    monkeypatch.setitem(customer.PLANNERS, "react", (fake_planner, "\nHOW YOU PLAN\n"))
 
     response = client.post(
         "/chat",
         json={"message": "Please help me", "planner": "react"},
+        headers={"Idempotency-Key": "request-before-enqueue"},
     )
 
-    assert response.status_code == 200
-    assert response.json()["reply"] == safe_reply
-    assert response.json()["transcript"][-1]["content"] == safe_reply
-    persisted = runtime.repository.sessions[next(iter(runtime.sessions))]
-    persisted_text = str(persisted["history"])
-    assert raw_reply not in persisted_text
-    assert safe_reply in persisted_text
+    assert response.status_code == 202
+    body = response.json()
+    assert body["state"] == "QUEUED"
+    assert body["enqueue_status"] == "queued"
+    assert runtime.workflow.dispatcher.calls == [(body["request_id"], "draft")]
+    assert runtime.repository.support_requests[body["request_id"]]["summary"] == "Please help me"
 
 
-def test_reset_clears_the_current_conversation(api_client, monkeypatch):
+def test_reset_clears_the_current_conversation(api_client):
     client, _ = api_client
-
-    def fake_planner(convo, work, **kwargs):
-        del work, kwargs
-        reply = "I can help with that."
-        convo.add_assistant({"role": "assistant", "content": reply})
-        return reply
-
-    monkeypatch.setitem(customer.PLANNERS, "react", (fake_planner, "\nHOW YOU PLAN\n"))
-    client.post("/chat", json={"message": "hello"})
+    client.get("/")
 
     response = client.post("/reset")
 

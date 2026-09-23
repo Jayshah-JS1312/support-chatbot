@@ -31,12 +31,16 @@ below are addressed.
 - One-use, expiring password-reset tokens that revoke existing sessions
 - Tenant ownership on orders, conversations, messages, memory, support
   requests, drafts, approvals, executions, and audit events
+- QStash-signed workflow callbacks with current/next key rotation
+- Payload-bound submission idempotency, leased processing claims, unique action
+  execution keys, retry recovery, and durable dead-letter records
+- Fail-closed approval expiry: no human response means no action executes
 - Internal traces disabled by default
 - Deterministic tests for tool, policy, authentication, and tenant boundaries
 
 ## Known release blockers
 
-- No durable idempotency or transactional commerce adapter
+- No transactional adapter to a real retailer/commerce provider
 - No distributed rate limiting or concurrency control across processes
 - Password-reset delivery is not connected to an email provider
 - No CSRF token mechanism beyond `SameSite=Lax` cookies; reassess before

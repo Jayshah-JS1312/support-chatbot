@@ -1,17 +1,16 @@
-"""Customer-facing chat, session, reset, and feedback routes."""
+"""Customer-facing asynchronous requests, session, reset, and feedback."""
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from support_chatbot import observe, policy
 from support_chatbot.api.dependencies import (
     runtime,
     session,
     set_session_cookie,
 )
 from support_chatbot.api.models import ChatRequest, FeedbackRequest, ResetRequest
-from support_chatbot.api.runtime import CHAT_PAGE, PLANNERS, SYSTEM
-from support_chatbot.config import settings
+from support_chatbot.api.runtime import CHAT_PAGE
+from support_chatbot.persistence import IdempotencyConflictError
 
 
 router = APIRouter(tags=["customer"])
@@ -66,80 +65,54 @@ def submit_feedback(
     return {"ok": True, "message": "Feedback saved"}
 
 
-@router.post("/chat")
-def chat(
+def _customer_request(row, *, created=False, enqueued=None):
+    result = {
+        "request_id": row["id"],
+        "reference": row["reference_number"],
+        "state": row["status"],
+        "created": created,
+    }
+    if enqueued is not None:
+        result["enqueue_status"] = "queued" if enqueued else "pending_recovery"
+    if row["status"] == "COMPLETED":
+        result["reply"] = row.get("draft_content")
+    elif row["status"] == "COMPLETED_WITHOUT_ACTION":
+        result["reply"] = "This request expired without an approved action. Please submit it again."
+    return result
+
+
+@router.post("/chat", status_code=202)
+def submit_request(
     payload: ChatRequest,
     request: Request,
+    idempotency_key: str = Header(..., alias="Idempotency-Key", min_length=8, max_length=200),
     context=Depends(session),
 ):
     app_runtime = runtime(request)
-    with app_runtime.get_turn_lock(context.sid):
-        chat_session = context.session
-        text = payload.message.strip()
-        if not text:
-            return {
-                "reply": "",
-                "steps": [],
-                **app_runtime.public_state(chat_session),
-            }
-
-        convo, work = chat_session["convo"], chat_session["work"]
-        before = len(work.actions)
-        run, rules = PLANNERS[payload.planner]
-        convo.system = SYSTEM + rules
-
-        observe.context(session=context.sid)
-        turn_id = observe.new_turn()
-
-        text, note = policy.check_input(text)
-        work.turn += 1
-        work.session_id = context.sid
-        convo.add_user(text)
-
-        steps = []
-        turn_failed = False
-        with observe.timer() as timer:
-            try:
-                raw_reply = run(
-                    convo,
-                    work,
-                    trace=False,
-                    steps=steps,
-                    longterm=app_runtime.longterm,
-                    extra=note,
-                )
-            except Exception as error:
-                turn_failed = True
-                observe.log("error", where="chat", error=type(error).__name__)
-                raw_reply = (
-                    "Something went wrong while processing your request. "
-                    "Please try again."
-                )
-
-        safe_reply = policy.check_output(
-            raw_reply,
-            work,
-            text,
-            context=app_runtime.longterm.recall(work.customer_email, context.sid) or "",
+    text = payload.message.strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="Message must not be blank")
+    try:
+        row, created = app_runtime.repository.create_support_request(
+            text, payload.planner, idempotency_key, context.sid
         )
-        convo.persist_safe_reply(raw_reply, safe_reply)
-        app_runtime.longterm.remember(work, session_id=context.sid)
+    except IdempotencyConflictError as error:
+        raise HTTPException(
+            status_code=409,
+            detail="Idempotency-Key was already used with a different request",
+        ) from error
+    should_enqueue = created or (row["status"] in {"RECEIVED", "APPROVED"} and not row.get("enqueued_at"))
+    enqueued = None
+    if should_enqueue:
+        enqueued, _ = app_runtime.workflow.enqueue(row)
+        row = app_runtime.repository.get_support_request(row["id"]) or row
+    return _customer_request(row, created=created, enqueued=enqueued)
 
-        observe.log(
-            "turn",
-            user=text,
-            steps=len(steps),
-            ms=timer.ms,
-            actions=len(work.actions) - before,
-            planner=payload.planner,
-            cost=observe.turn_cost(turn_id),
-            error=turn_failed,
-        )
-        app_runtime.save_sessions(context.sid)
 
-        return {
-            "reply": safe_reply,
-            "steps": steps if settings.expose_internal_ui else [],
-            "new_actions": work.actions[before:],
-            **app_runtime.public_state(chat_session),
-        }
+@router.get("/requests/{request_id}")
+def request_status(request_id: str, request: Request, context=Depends(session)):
+    del context
+    row = runtime(request).repository.get_support_request(request_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Request not found")
+    return _customer_request(row)

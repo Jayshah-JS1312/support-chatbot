@@ -13,6 +13,7 @@ from support_chatbot.config import settings
 from support_chatbot.llm import MODEL
 from support_chatbot.memory import ConversationMemory, LongTermMemory, WorkingMemory
 from support_chatbot.persistence import get_repository
+from support_chatbot.workflow import WorkflowCoordinator
 
 
 SYSTEM = profile.system_prompt()
@@ -43,8 +44,9 @@ class SessionContext:
 class RuntimeState:
     """Own sessions, persistence paths, and locks for one application process."""
 
-    def __init__(self, repository=None):
+    def __init__(self, repository=None, workflow=None):
         self.repository = repository or get_repository()
+        self.workflow = workflow or WorkflowCoordinator(self.repository)
         self.longterm = LongTermMemory(self.repository)
         self.sessions = {}
         self.session_lock = threading.RLock()

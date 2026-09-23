@@ -22,6 +22,9 @@ baseline.
 - Supabase-compatible versioned migrations with reproducible demo seeds
 - Customer/admin authentication with revocable, rotating server-side sessions
 - PostgreSQL RLS-backed ownership isolation for customer data
+- Durable `202 Accepted` support requests orchestrated by Upstash Workflow
+- Human-approval state machine with retries, expiry, recovery, and dead letters
+- End-to-end idempotency for submissions, deliveries, and action execution
 - Operations dashboard plus health, readiness, and Prometheus metrics endpoints
 - Deterministic retrieval-evaluation dashboard with versioned test cases
 - Deterministic unit tests and opt-in live LLM evaluations
@@ -52,7 +55,9 @@ python -m pip install -e '.[dev]'
 cp .env.example .env
 ```
 
-Set `OPENAI_API_KEY` and `DATABASE_URL` in `.env`, apply migrations, then run
+Set `OPENAI_API_KEY` and `DATABASE_URL` in `.env`. For asynchronous processing,
+also set the QStash token/signing keys and the application's public base URL.
+Apply migrations, then run
 either interface:
 
 ```bash
@@ -119,7 +124,7 @@ and [security](SECURITY.md) before exposing the service beyond localhost.
 ## Current production boundary
 
 The repository now has a FastAPI/Uvicorn service, durable PostgreSQL business
-state, customer/admin authentication, and ownership isolation. It is not ready
-for real customer traffic until encrypted customer-data operations, rate
-limiting, TLS/reverse-proxy configuration, email-based reset delivery, and the
-asynchronous human-approval workflow are complete.
+state, customer/admin authentication, ownership isolation, and an asynchronous
+human-approval workflow. It is not ready for real customer traffic until the
+operator approval UI, encrypted customer-data operations, rate limiting,
+TLS/reverse-proxy configuration, and email-based reset delivery are complete.

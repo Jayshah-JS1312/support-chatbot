@@ -2,17 +2,18 @@
 
 ## Request flow
 
-1. A FastAPI customer route or `cli.py` accepts a customer message.
+1. A FastAPI customer route accepts a customer message and idempotency key.
 2. Authentication middleware resolves the opaque session cookie and establishes
    a request identity used by authorization and PostgreSQL RLS.
-3. `policy.check_input` removes card-like data and marks suspected instruction override attempts.
-4. The selected planner receives conversation, working, and customer memory.
-5. The model can request only tools declared in `tools.SCHEMAS`.
-6. `policy.guarded_run` enforces cross-turn confirmation and escalation rules.
-7. Tool results update working memory and are returned to the planner.
-8. `policy.check_output` removes identifiers that lack a trusted source.
-9. The sanitized response—not the raw model response—memory, and trace are
-   persisted.
+3. PostgreSQL commits a `RECEIVED` support request before any queue call.
+4. QStash delivers the initial signed Upstash Workflow invocation. The customer
+   receives `202 Accepted` without waiting for the model.
+5. A leased worker moves the request through `QUEUED → DRAFTING`, creates a
+   sanitized resolution draft, and commits `AWAITING_APPROVAL`.
+6. An authenticated admin later approves or rejects. Approval publishes a new
+   durable execution delivery; rejection completes without action.
+7. Execution claims the request and inserts an action using a unique execution
+   idempotency key before completing. Duplicate deliveries are safe no-ops.
 
 ## Boundaries
 
@@ -29,15 +30,35 @@
 - `observe.py`: trace, latency, token, and cost events
 - `api/app.py`: FastAPI factory, request limits, and structured errors
 - `api/runtime.py`: process-local cache/locks over durable PostgreSQL conversations
-- `api/routes/customer.py`: chat, browser session, reset, and feedback routes
+- `api/routes/customer.py`: asynchronous submissions/status, browser session, reset, and feedback
 - `api/routes/authentication.py`: signup, login, logout, refresh, identity, and password reset
 - `api/routes/admin.py`: internal operator pages, events, and raw traces
-- `api/routes/workflow_callbacks.py`: reserved asynchronous callback boundary
+- `api/routes/workflow_callbacks.py`: operator recovery and expiry controls
+- `workflow.py`: Upstash dispatch, signed callback registration, drafting,
+  execution, retry recovery, and dead-letter handling
 - `api/routes/observability.py`: health, readiness, metrics, and retrieval evals
 
 The `support-chatbot-web` command serves `support_chatbot.web:app` through
-Uvicorn. Workflow callbacks remain deliberately unimplemented until signed
-payload, replay-protection, and idempotency contracts are introduced.
+Uvicorn. The Upstash SDK verifies QStash signatures with the current and next
+signing keys before accepting workflow invocations.
+
+## Durable workflow states
+
+```text
+RECEIVED → QUEUED → DRAFTING → AWAITING_APPROVAL
+                                   ├→ APPROVED → EXECUTING → COMPLETED
+                                   ├→ REJECTED → COMPLETED
+                                   └→ EXPIRED → COMPLETED_WITHOUT_ACTION
+```
+
+Submission idempotency is unique per user and payload-bound. Drafting and
+execution use expiring database leases; an active duplicate returns without
+work, while a delivery after a crashed worker's lease can resume. Drafts and
+approval tasks are unique per request, and action executions have a unique
+business idempotency key. Failed enqueue attempts remain `RECEIVED` or
+`APPROVED` and are retried by `/workflow/recover`. Exhausted Upstash retries
+are recorded in `workflow_dead_letters`. `/workflow/expire` implements the
+absence policy: expire and complete without action—never execute silently.
 
 ## Authentication and authorization
 

@@ -54,6 +54,11 @@ class ChatRequest(StrictRequest):
     planner: Literal["react", "plan"] = "react"
 
 
+class ApprovalDecisionRequest(StrictRequest):
+    decision: Literal["approve", "reject"]
+    reason: str = Field(default="", max_length=2_000)
+
+
 class ResetRequest(StrictRequest):
     pass
 

@@ -23,7 +23,7 @@ def test_unauthenticated_customer_admin_and_workflow_calls_fail():
     with client_for(get_repository()) as client:
         assert client.get("/state").status_code == 401
         assert client.get("/admin").status_code == 401
-        assert client.post("/workflow/callbacks").status_code == 401
+        assert client.post("/workflow/recover").status_code == 401
 
 
 def test_customer_receives_403_on_every_admin_surface():

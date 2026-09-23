@@ -33,6 +33,11 @@ def require_admin(request: Request):
     user = require_user(request)
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Administrator access required")
+    return user
+
+
+def require_internal_ui(request: Request):
+    user = require_admin(request)
     if not settings.expose_internal_ui:
         raise HTTPException(status_code=404, detail="Not found")
     return user

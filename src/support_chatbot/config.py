@@ -31,6 +31,26 @@ class Settings:
     database_pool_max: int = int(os.getenv("SUPPORT_CHATBOT_DB_POOL_MAX", "5"))
     auth_session_hours: int = int(os.getenv("SUPPORT_CHATBOT_AUTH_SESSION_HOURS", "24"))
     expose_reset_token: bool = _flag("SUPPORT_CHATBOT_EXPOSE_RESET_TOKEN")
+    public_base_url: str = os.getenv("SUPPORT_CHATBOT_PUBLIC_BASE_URL", "").rstrip("/")
+    qstash_token: str = os.getenv("QSTASH_TOKEN", "")
+    qstash_current_signing_key: str = os.getenv("QSTASH_CURRENT_SIGNING_KEY", "")
+    qstash_next_signing_key: str = os.getenv("QSTASH_NEXT_SIGNING_KEY", "")
+    workflow_retries: int = int(os.getenv("SUPPORT_CHATBOT_WORKFLOW_RETRIES", "3"))
+    workflow_lease_seconds: int = int(os.getenv("SUPPORT_CHATBOT_WORKFLOW_LEASE_SECONDS", "300"))
+    approval_ttl_hours: int = int(os.getenv("SUPPORT_CHATBOT_APPROVAL_TTL_HOURS", "24"))
+
+    @property
+    def workflow_enabled(self) -> bool:
+        return bool(
+            self.public_base_url
+            and self.qstash_token
+            and self.qstash_current_signing_key
+            and self.qstash_next_signing_key
+        )
+
+    @property
+    def workflow_url(self) -> str:
+        return f"{self.public_base_url}/workflow/requests"
 
 
 settings = Settings()
