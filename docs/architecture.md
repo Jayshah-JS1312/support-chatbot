@@ -19,12 +19,14 @@
 - `plan_execute.py`: plan-first execution
 - `policy.py`: deterministic controls around model input, actions, and output
 - `tools.py`: model-facing tool schemas and dispatch
-- `store.py`: replaceable simulated commerce adapter
-- `memory.py`: conversation, working, and customer memory
+- `store.py`: model-tool facade over the durable commerce repository
+- `persistence.py`: pooled PostgreSQL access and atomic state transitions
+- `memory.py`: conversation and working-memory models plus durable customer-memory facade
+- `db_migrations.py`: ordered migration runner for Docker/non-Supabase deployments
 - `knowledge.py` / `embedder.py`: local retrieval pipeline
 - `observe.py`: trace, latency, token, and cost events
 - `api/app.py`: FastAPI factory, request limits, and structured errors
-- `api/runtime.py`: process-local sessions, persistence, and shared locks
+- `api/runtime.py`: process-local cache/locks over durable PostgreSQL conversations
 - `api/routes/customer.py`: chat, browser session, reset, and feedback routes
 - `api/routes/authentication.py`: reserved authentication boundary
 - `api/routes/admin.py`: internal operator pages, events, and raw traces
@@ -55,15 +57,22 @@ The retrieval dashboard reads versioned cases from
 embedding and knowledge index, so it does not make paid model calls. Live agent
 behavior evaluations remain opt-in release checks under `evaluations/`.
 
-## Runtime data
+## Durable data
 
-Runtime files are intentionally outside the Python package:
+PostgreSQL is the source of truth for profiles, orders/events, conversations,
+messages, verified memory facts/summaries, support requests, drafts, approval
+tasks, action executions, audit events, and evaluation records. The schema lives
+under `supabase/migrations/`; the Docker migration job applies every new file
+exactly once.
 
-- `SUPPORT_CHATBOT_STATE_DIR`: sessions, customer memory, traces, and feedback
-- `SUPPORT_CHATBOT_CACHE_DIR`: embedding model and ChromaDB index
+Order mutations use `orders.version` for optimistic concurrency control. The
+status and expected version are checked in the same SQL update; a stale worker
+cannot overwrite a newer action. The order event and action execution are
+committed in the same transaction as the status change.
 
-Container deployments mount both below `/data`. Application assets—the UI and
-knowledge Markdown—ship as package data and remain immutable.
+Only local telemetry/evaluation report files and the ChromaDB embedding cache
+remain filesystem-backed. They are not customer/business state. Application
+assets—the UI and knowledge Markdown—ship as immutable package data.
 
 ## Test tiers
 

@@ -17,21 +17,15 @@ You can see the difference in one question: "did I already escalate this?"
 The transcript can answer it only by re-reading everything. Working memory
 answers it by looking at one field.
 
-LONG-TERM MEMORY — what is known about a
-CUSTOMER across conversations (class LongTermMemory, kept in
-state/customers.json). WorkingMemory also gains two fields, `turn` and
+LONG-TERM MEMORY — what is known about a customer across conversations.
+It is stored as verified facts and a compact PostgreSQL summary.
+WorkingMemory also gains two fields, `turn` and
 `pending`, which the policy layer uses to make a confirmation span two
 turns.
 """
 
 import json
-import threading
-from datetime import date
-from pathlib import Path
-
-from support_chatbot import STATE_DIR
-
-TODAY = date.today().isoformat()
+from support_chatbot.persistence import get_repository
 
 
 class ConversationMemory:
@@ -234,7 +228,7 @@ class LongTermMemory:
     """What we know about a CUSTOMER, across every conversation they have had.
 
     Conversation memory dies with the chat. Working memory dies with the
-    task. This one is keyed by the customer and lives in a file, so when
+    task. This one is keyed by the customer and lives in PostgreSQL, so when
     the same person comes back tomorrow the agent knows it has met them:
     how many times, what they asked about, whether they already used up an
     exception.
@@ -244,48 +238,21 @@ class LongTermMemory:
     customer once said in anger.
     """
 
-    def __init__(self, path=None):
-        self._lock = threading.RLock()
-        self.path = Path(path) if path else STATE_DIR / "customers.json"
-        try:
-            self.customers = json.loads(self.path.read_text())
-        except (OSError, json.JSONDecodeError):
-            self.customers = {}
+    def __init__(self, repository=None):
+        self.repository = repository or get_repository()
 
     # -- writing ----------------------------------------------------------
 
     def remember(self, work, session_id="cli"):
         """Fold the current task's working memory into the customer's record."""
-        email = work.customer_email
-        if not email:
-            return                      # nothing to key on yet — no tool has
-                                        # identified the customer
-        rec = self.customers.setdefault(email.lower(), {
-            "first_seen": TODAY, "sessions": [], "orders_discussed": [],
-            "actions": [], "escalations": [], "refusals": 0,
-        })
-        rec["last_seen"] = TODAY
-        if session_id not in rec["sessions"]:     # one conversation, counted once
-            rec["sessions"].append(session_id)
-        for oid in work.orders:
-            if oid not in rec["orders_discussed"]:
-                rec["orders_discussed"].append(oid)
-        for a in work.actions:
-            if a not in rec["actions"]:
-                rec["actions"].append(a)
-        if work.escalation and work.escalation not in rec["escalations"]:
-            rec["escalations"].append(work.escalation)
-        rec["refusals"] = max(rec["refusals"], len(work.failures))
-        self._save()
+        self.repository.remember(work.to_dict(), session_id)
 
     # -- reading ----------------------------------------------------------
 
     def recall(self, email, current_session=None):
         """A short note for the model, or None for a customer we have not met
         in an EARLIER conversation than this one."""
-        with self._lock:
-            rec = self.customers.get((email or "").lower())
-            rec = json.loads(json.dumps(rec)) if rec else None
+        rec = self.repository.recall(email)
         if not rec:
             return None
         previous = [s for s in rec["sessions"] if s != current_session]
@@ -302,13 +269,3 @@ class LongTermMemory:
             lines.append(f"Has hit a policy refusal {rec['refusals']} time(s) before; "
                          f"be clear about rules up front.")
         return "\n".join(lines)
-
-    def _save(self):
-        try:
-            with self._lock:
-                self.path.parent.mkdir(exist_ok=True)
-                temporary = self.path.with_suffix(".tmp")
-                temporary.write_text(json.dumps(self.customers, indent=1))
-                temporary.replace(self.path)
-        except OSError:
-            pass

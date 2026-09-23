@@ -18,12 +18,15 @@ baseline.
 - Browser and terminal interfaces
 - Responsive customer chat UI with built-in demo prompts
 - FastAPI application served by Uvicorn with validated request schemas
+- PostgreSQL-backed orders, conversations, verified customer memory, and audit data
+- Supabase-compatible versioned migrations with reproducible demo seeds
 - Operations dashboard plus health, readiness, and Prometheus metrics endpoints
 - Deterministic retrieval-evaluation dashboard with versioned test cases
 - Deterministic unit tests and opt-in live LLM evaluations
 
-The commerce backend is still a local simulator. Connecting authenticated,
-production order APIs is a required future milestone.
+The commerce workflows use durable local PostgreSQL records, but they still
+simulate an external retailer. Connecting authenticated production commerce
+APIs is a required future milestone.
 
 ## Repository layout
 
@@ -32,6 +35,7 @@ src/support_chatbot/   application package, UI, and knowledge documents
 tests/                 deterministic unit and policy tests
 evaluations/           opt-in behavioral and model-judged evaluations
 scripts/               feedback and retrieval benchmarking utilities
+supabase/              versioned PostgreSQL schema and reproducible demo seed
 docs/                  architecture, deployment, and security guidance
 test-data/             ready-to-run manual conversation scenarios
 .github/workflows/     CI for deterministic checks
@@ -46,9 +50,11 @@ python -m pip install -e '.[dev]'
 cp .env.example .env
 ```
 
-Set `OPENAI_API_KEY` in `.env`, then run either interface:
+Set `OPENAI_API_KEY` and `DATABASE_URL` in `.env`, apply migrations, then run
+either interface:
 
 ```bash
+support-chatbot-migrate
 support-chatbot-web
 support-chatbot
 ```
@@ -76,7 +82,9 @@ python -m evaluations.golden --audit
 python -m evaluations.golden
 ```
 
-`pytest` is deterministic and makes no model or network calls. Everything under
+`pytest` is deterministic and makes no model calls. PostgreSQL integration
+tests run when `DATABASE_URL` is exported and otherwise report as skipped.
+Everything under
 `evaluations/` calls the configured model provider, can incur cost, and is
 therefore intentionally excluded from default CI.
 
@@ -97,8 +105,7 @@ and [security](SECURITY.md) before exposing the service beyond localhost.
 
 ## Current production boundary
 
-The repository now has a deployable FastAPI/Uvicorn container foundation, but
-the application is not yet ready for real customer traffic. Authentication,
-authorization, a durable transactional order backend, encrypted customer data,
-rate limiting, TLS/reverse-proxy configuration, and multi-process durable state
-remain mandatory work.
+The repository now has a FastAPI/Uvicorn service and durable PostgreSQL business
+state, but it is not ready for real customer traffic. Authentication,
+authorization, encrypted customer data, rate limiting, TLS/reverse-proxy
+configuration, and the asynchronous human-approval workflow remain mandatory.

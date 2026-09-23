@@ -1,6 +1,31 @@
 name: customer-support-agent
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: support_chatbot
+      POSTGRES_USER: support_chatbot
+      POSTGRES_PASSWORD: support_chatbot
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U support_chatbot -d support_chatbot"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - support-chatbot-postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  migrate:
+    build: .
+    command: ["support-chatbot-migrate"]
+    environment:
+      DATABASE_URL: postgresql://support_chatbot:support_chatbot@postgres:5432/support_chatbot
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   app:
     build: .
     env_file:
@@ -11,11 +36,18 @@ services:
       # deploying publicly unless the route sits behind authentication.
       SUPPORT_CHATBOT_EXPOSE_INTERNAL_UI: "true"
       SUPPORT_CHATBOT_SECURE_COOKIES: "false"
+      DATABASE_URL: postgresql://support_chatbot:support_chatbot@postgres:5432/support_chatbot
     ports:
       - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     volumes:
-      - support-chatbot-data:/data
+      - support-chatbot-cache:/data/cache
     restart: unless-stopped
 
 volumes:
-  support-chatbot-data:
+  support-chatbot-postgres:
+  support-chatbot-cache:

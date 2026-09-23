@@ -13,20 +13,14 @@ import sys
 import pytest
 
 from support_chatbot import observe, store
+from support_chatbot.persistence import InMemoryRepository, get_repository
 from tests.fakes import FakeLLM
 
 
 @pytest.fixture
 def fresh_store():
-    """Snapshot the seed orders, hand the test a clean copy, restore after."""
-    orders = {k: dict(v) for k, v in store.ORDERS.items()}
-    returns = dict(store.RETURNS)
-    store.RETURNS.clear()
-    yield
-    store.ORDERS.clear()
-    store.ORDERS.update(orders)
-    store.RETURNS.clear()
-    store.RETURNS.update(returns)
+    """The autouse repository fixture already provides a clean seed."""
+    yield get_repository()
 
 
 @pytest.fixture(autouse=True)
@@ -34,13 +28,22 @@ def tmp_state(monkeypatch, tmp_path):
     """Point every on-disk path at a temp folder, for every test.
 
     observe writes state/trace.jsonl, knowledge builds .cache/chroma, and
-    LongTermMemory writes state/customers.json. Paths are patched where used.
+    Customer/business memory uses the injected repository; only trace and
+    retrieval-cache paths are patched here.
     """
     monkeypatch.setattr("support_chatbot.observe.LOGFILE", tmp_path / "state" / "trace.jsonl")
     monkeypatch.setattr("support_chatbot.knowledge.STORE", tmp_path / ".cache" / "chroma")
     observe.EVENTS.clear()
     monkeypatch.setattr("support_chatbot.observe.SEQ", 0)
-    return tmp_path
+    repository = InMemoryRepository()
+    previous = store.set_repository(repository)
+    yield tmp_path
+    store.set_repository(previous)
+
+
+@pytest.fixture
+def memory_repository():
+    return get_repository()
 
 
 @pytest.fixture

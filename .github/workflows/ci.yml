@@ -10,6 +10,20 @@ permissions:
 jobs:
   deterministic-tests:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: support_chatbot
+          POSTGRES_USER: support_chatbot
+          POSTGRES_PASSWORD: support_chatbot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U support_chatbot -d support_chatbot"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://support_chatbot:support_chatbot@127.0.0.1:5432/support_chatbot
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -19,5 +33,6 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e '.[dev]'
       - run: python -m compileall -q src tests evaluations scripts
+      - run: support-chatbot-migrate
       - run: pytest
       - run: python -m build --wheel

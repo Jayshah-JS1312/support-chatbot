@@ -1,18 +1,17 @@
 """FastAPI transport contracts with model calls replaced by local fakes."""
 
-import json
-
 import pytest
 from fastapi.testclient import TestClient
 
 from support_chatbot.api.app import create_app
 from support_chatbot.api.routes import customer
 from support_chatbot.api.runtime import RuntimeState
+from support_chatbot.persistence import get_repository
 
 
 @pytest.fixture
 def api_client(tmp_path):
-    runtime = RuntimeState(tmp_path / "state")
+    runtime = RuntimeState(get_repository())
     with TestClient(create_app(runtime)) as client:
         yield client, runtime
 
@@ -120,8 +119,10 @@ def test_only_sanitized_agent_response_is_persisted(api_client, monkeypatch):
     assert response.status_code == 200
     assert response.json()["reply"] == safe_reply
     assert response.json()["transcript"][-1]["content"] == safe_reply
-    assert raw_reply not in runtime.sessions_file.read_text()
-    assert safe_reply in runtime.sessions_file.read_text()
+    persisted = runtime.repository.load_session(next(iter(runtime.sessions)))
+    persisted_text = str(persisted["history"])
+    assert raw_reply not in persisted_text
+    assert safe_reply in persisted_text
 
 
 def test_reset_clears_the_current_conversation(api_client, monkeypatch):
@@ -161,7 +162,7 @@ def test_feedback_is_validated_and_persisted(api_client):
         },
     )
     assert valid.status_code == 200
-    record = json.loads(runtime.feedback_file.read_text())
+    record = runtime.repository.feedback[-1]
     assert record["corrected_response"] == "better answer"
 
 

@@ -1,10 +1,10 @@
 """Health, metrics, and deterministic retrieval-evaluation routes."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from support_chatbot import dashboard, evals, observe
-from support_chatbot.api.dependencies import require_internal_ui
+from support_chatbot.api.dependencies import require_internal_ui, runtime
 from support_chatbot.api.models import ResetRequest
 from support_chatbot.llm import MODEL
 
@@ -22,7 +22,13 @@ def health():
 
 
 @router.get("/readyz")
-def readiness():
+def readiness(request: Request):
+    try:
+        healthy = runtime(request).repository.healthcheck()
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Database is unavailable") from error
+    if not healthy:
+        raise HTTPException(status_code=503, detail="Database is unavailable")
     return {"status": "ready", "model": MODEL}
 
 

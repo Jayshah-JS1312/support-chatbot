@@ -32,8 +32,7 @@ def find_orders(email):
     hits = [
         {"order_id": o["order_id"], "item": o["item"],
          "status": o["status"], "ordered_on": o["ordered_on"]}
-        for o in store.ORDERS.values()
-        if o["email"].lower() == email.lower().strip()
+        for o in store.find_orders(email)
     ]
     if not hits:
         return {"error": f"No orders found for {email}."}
@@ -42,7 +41,7 @@ def find_orders(email):
 
 def get_order(order_id):
     """Full detail for one order."""
-    order = store.ORDERS.get(order_id.strip())
+    order = store.get_order(order_id.strip())
     if not order:
         return {"error": f"No order found with id {order_id}."}
     return {
@@ -58,7 +57,7 @@ def get_order(order_id):
 
 def track_package(order_id):
     """The carrier scan history for an order."""
-    order = store.ORDERS.get(order_id.strip())
+    order = store.get_order(order_id.strip())
     if not order:
         return {"error": f"No order found with id {order_id}."}
     if not order["tracking"]:
@@ -72,7 +71,7 @@ def track_package(order_id):
 
 def cancel_order(order_id):
     """Cancel an order — only allowed before it ships. GUARDRAIL."""
-    order = store.ORDERS.get(order_id.strip())
+    order = store.get_order(order_id.strip())
     if not order:
         return {"error": f"No order found with id {order_id}."}
 
@@ -84,7 +83,12 @@ def cancel_order(order_id):
     if order["status"] == "cancelled":
         return {"error": f"Order {order_id} is already cancelled."}
 
-    order["status"] = "cancelled"
+    try:
+        version = store.cancel(order["order_id"], order["version"])
+    except store.ConcurrentUpdateError:
+        return {"error": "This order changed while cancellation was being processed. Refresh its status and try again.", "retry": True}
+    if version is None:
+        return {"error": "The order is no longer cancellable. Refresh its status."}
     return {
         "cancelled": True,
         "order_id": order["order_id"],
@@ -95,7 +99,7 @@ def cancel_order(order_id):
 
 def start_return(order_id, reason):
     """Open a return — only for delivered orders inside the return window. GUARDRAIL."""
-    order = store.ORDERS.get(order_id.strip())
+    order = store.get_order(order_id.strip())
     if not order:
         return {"error": f"No order found with id {order_id}."}
 
@@ -113,9 +117,12 @@ def start_return(order_id, reason):
                      f"A human agent can review an exception."
         }
 
-    rma = f"RMA-{len(store.RETURNS) + 1001}"
-    store.RETURNS[rma] = {"order_id": order["order_id"], "reason": reason}
-    order["status"] = "return started"
+    try:
+        rma = store.start_return(order["order_id"], reason, order["version"])
+    except store.ConcurrentUpdateError:
+        return {"error": "This order changed while the return was being started. Refresh its status and try again.", "retry": True}
+    if rma is None:
+        return {"error": "The order is no longer return-eligible. Refresh its status."}
     return {
         "rma": rma,
         "order_id": order["order_id"],
@@ -145,7 +152,7 @@ def escalate(summary):
     """Hand off to a human. The honest answer when no other tool fits."""
     return {
         "escalated": True,
-        "ticket": "ESC-4417",
+        "ticket": store.create_escalation(summary),
         "message": "A human agent will email you within 24 hours.",
         "summary": summary,
     }

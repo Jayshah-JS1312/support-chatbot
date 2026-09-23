@@ -1,0 +1,3 @@
+-- Demo data is part of the initial versioned migration so both the application
+-- migration runner and `supabase db reset` rebuild exactly the same dataset.
+-- This file intentionally remains empty to prevent a second seed pass.
