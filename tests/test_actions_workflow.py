@@ -83,6 +83,7 @@ def test_approved_action_executes_once(action_app):
     become_admin(client)
     approved = client.post(f"/admin/requests/{request_id}/decision", json={
         "decision": "approve", "reason": "Preview and policy evidence verified",
+        "review_necessary": True,
     })
     assert approved.status_code == 200
     assert dispatcher.calls[-1] == (request_id, "execute")
@@ -101,7 +102,9 @@ def test_stale_approval_fails_without_action(action_app):
     request_id = confirm(client, proposal, "stale-action-001").json()["request_id"]
     repository.orders["112-3333333-3333333"]["version"] += 1
     become_admin(client)
-    client.post(f"/admin/requests/{request_id}/decision", json={"decision": "approve"})
+    client.post(f"/admin/requests/{request_id}/decision", json={
+        "decision": "approve", "review_necessary": True,
+    })
 
     result = coordinator.execute(request_id)
     assert result["state"] == "COMPLETED_WITHOUT_ACTION"
@@ -114,7 +117,9 @@ def test_arguments_edited_after_approval_are_rejected(action_app):
     proposal = preview_cancel(client)
     request_id = confirm(client, proposal, "tamper-action-001").json()["request_id"]
     become_admin(client)
-    client.post(f"/admin/requests/{request_id}/decision", json={"decision": "approve"})
+    client.post(f"/admin/requests/{request_id}/decision", json={
+        "decision": "approve", "review_necessary": True,
+    })
     repository.support_requests[request_id]["action_arguments"]["order_id"] = "112-1111111-1111111"
 
     result = coordinator.execute(request_id)

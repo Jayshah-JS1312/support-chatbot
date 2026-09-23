@@ -93,6 +93,20 @@ class RuntimeState:
         with self.session_lock:
             return self.turn_locks.setdefault(sid, threading.RLock())
 
+    def reload_session(self, sid, user_id):
+        persisted = self.repository.load_session(sid)
+        if not persisted:
+            return self.sessions.get(sid)
+        with self.session_lock:
+            self.sessions[sid] = {
+                "convo": ConversationMemory.from_dict(
+                    SYSTEM, {"history": persisted["history"]}
+                ),
+                "work": WorkingMemory.from_dict(persisted["work"]),
+                "user_id": user_id,
+            }
+            return self.sessions[sid]
+
     def reset_session(self, sid):
         with self.session_lock:
             user_id = self.sessions.get(sid, {}).get("user_id")
@@ -139,3 +153,9 @@ class RuntimeState:
                 ),
             })
         return result
+
+    def close(self):
+        self.workflow.close()
+        close = getattr(self.repository, "close", None)
+        if close:
+            close()

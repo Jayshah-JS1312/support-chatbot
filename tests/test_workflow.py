@@ -9,7 +9,7 @@ from support_chatbot.api.app import create_app
 from support_chatbot.api.runtime import RuntimeState
 from support_chatbot.auth import Identity, reset_identity, set_identity
 from support_chatbot.persistence import IdempotencyConflictError, get_repository
-from support_chatbot.workflow import EnqueueError, WorkflowCoordinator
+from support_chatbot.workflow import EnqueueError, LocalWorkflowDispatcher, WorkflowCoordinator
 from support_chatbot.config import settings
 from support_chatbot import workflow as workflow_module
 
@@ -97,7 +97,8 @@ def test_approval_resumes_later_and_duplicate_execution_is_one_action(workflow_s
 
     decision = client.post(
         f"/admin/requests/{request_id}/decision",
-        json={"decision": "approve", "reason": "Required human review"},
+        json={"decision": "approve", "reason": "Required human review",
+              "review_necessary": True},
     )
     assert decision.status_code == 200
     assert decision.json()["state"] == "APPROVED"
@@ -127,6 +128,30 @@ def test_stored_but_unenqueued_request_is_recovered(workflow_setup):
     assert repository.support_requests[request_id]["status"] == "QUEUED"
 
 
+def test_local_dispatcher_processes_without_upstash():
+    repository = get_repository()
+    repository.enforce_auth = True
+    token = set_identity(Identity(
+        "11111111-1111-4111-8111-111111111111", "raj@example.com", "Raj", "customer"
+    ))
+    try:
+        request, _ = repository.create_support_request(
+            "Where is my order?", "react", "local-worker-001"
+        )
+    finally:
+        reset_identity(token)
+    coordinator = WorkflowCoordinator(
+        repository, draft_generator=lambda row: ("Grounded draft", {"type": "send_resolution"})
+    )
+    try:
+        assert isinstance(coordinator.dispatcher, LocalWorkflowDispatcher)
+        assert coordinator.enqueue(request)[0] is True
+        coordinator.dispatcher.messages.join()
+        assert repository.support_requests[request["id"]]["status"] == "AWAITING_APPROVAL"
+    finally:
+        coordinator.close()
+
+
 def test_rejection_completes_without_execution(workflow_setup):
     repository, _, coordinator, _, client = workflow_setup
     request_id = submit(client, key="reject-key-001").json()["request_id"]
@@ -135,10 +160,42 @@ def test_rejection_completes_without_execution(workflow_setup):
     client.post("/auth/login", json={"email": "admin@example.com", "password": "AdminDemo!2026"})
     response = client.post(
         f"/admin/requests/{request_id}/decision",
-        json={"decision": "reject", "reason": "Draft is not appropriate"},
+        json={"decision": "reject", "reason": "Draft is not appropriate",
+              "review_necessary": True},
     )
     assert response.json()["state"] == "COMPLETED"
     assert repository.action_executions == {}
+
+
+def test_admin_inbox_edit_decision_and_audit_are_durable(workflow_setup):
+    repository, dispatcher, coordinator, _, customer = workflow_setup
+    request_id = submit(customer, key="inbox-edit-001").json()["request_id"]
+    coordinator.draft(request_id)
+
+    app = customer.app
+    with TestClient(app) as admin:
+        assert admin.post("/auth/login", json={
+            "email": "admin@example.com", "password": "AdminDemo!2026",
+        }).status_code == 200
+        queue = admin.get("/admin/approvals.json?status=pending")
+        assert queue.status_code == 200
+        assert request_id in {item["request_id"] for item in queue.json()["items"]}
+        detail = admin.get(f"/admin/approvals/{request_id}.json")
+        assert detail.status_code == 200
+        assert detail.json()["proposed_response"] == "Proposed safe response"
+        decision = admin.post(f"/admin/requests/{request_id}/decision", json={
+            "decision": "approve",
+            "reason": "Corrected tone before sending",
+            "edited_response": "Updated safe response",
+            "review_necessary": False,
+        })
+        assert decision.status_code == 200
+
+    row = repository.support_requests[request_id]
+    assert row["draft_content"] == "Updated safe response"
+    assert row["review_necessary"] is False
+    assert repository.audit_events[-1]["detail"]["response_edited"] is True
+    assert dispatcher.calls[-1] == (request_id, "execute")
 
 
 def test_expired_approval_completes_without_action(workflow_setup):

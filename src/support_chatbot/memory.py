@@ -136,6 +136,15 @@ class WorkingMemory:
         """Fold one Observation into what we know."""
         if result.get("needs_confirmation"):
             return                     # a preview changes nothing yet
+        if result.get("proposal"):
+            oid = result.get("arguments", {}).get("order_id")
+            if oid:
+                facts = {"version": result.get("order_version")}
+                observed = result.get("policy_evidence", {}).get("observed_status")
+                if observed:
+                    facts["status"] = observed
+                self.orders.setdefault(oid, {}).update(facts)
+            return                     # proposals are not completed actions
         if tool == "find_orders" and "orders" in result:
             self.customer_email = args.get("email")
             for o in result["orders"]:

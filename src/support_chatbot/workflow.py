@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import queue
+import threading
+import uuid
 from contextlib import contextmanager
 
 from anyio import to_thread
 from qstash import QStash, Receiver
 from upstash_workflow.fastapi import Serve
 
-from support_chatbot import policy
+from support_chatbot import observe, policy
 from support_chatbot.auth import Identity, reset_identity, set_identity
 from support_chatbot.config import settings
 from support_chatbot.llm import chat
@@ -59,28 +62,121 @@ class UpstashDispatcher:
             raise EnqueueError(type(error).__name__) from error
 
 
+class LocalWorkflowDispatcher:
+    """Process durable workflow deliveries off-request for local Docker use."""
+
+    def __init__(self):
+        self.messages = queue.Queue()
+        self.coordinator = None
+        self.closed = threading.Event()
+        self.worker = threading.Thread(target=self._run, name="ami-local-workflow", daemon=True)
+        self.worker.start()
+
+    def bind(self, coordinator):
+        self.coordinator = coordinator
+
+    def enqueue(self, request_id, phase):
+        run_id = f"local-{uuid.uuid4().hex}"
+        self.messages.put((str(request_id), phase, run_id))
+        return run_id
+
+    def _run(self):
+        while not self.closed.is_set():
+            try:
+                request_id, phase, run_id = self.messages.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                if self.coordinator is None:
+                    raise RuntimeError("Local workflow dispatcher is not bound")
+                if phase == "execute":
+                    self.coordinator.execute(request_id)
+                else:
+                    self.coordinator.draft(request_id)
+            except Exception as error:
+                if self.coordinator is not None:
+                    self.coordinator.record_failure(
+                        request_id, run_id, 500, type(error).__name__, {"dispatcher": "local"}
+                    )
+                observe.log("error", where="local_workflow", error=type(error).__name__)
+            finally:
+                self.messages.task_done()
+
+    def close(self):
+        self.closed.set()
+        self.worker.join(timeout=2)
+
+
 class WorkflowCoordinator:
     def __init__(self, repository, dispatcher=None, draft_generator=None):
         self.repository = repository
-        self.dispatcher = dispatcher or UpstashDispatcher()
+        self.dispatcher = dispatcher or (
+            UpstashDispatcher() if settings.workflow_enabled else LocalWorkflowDispatcher()
+        )
         self.draft_generator = draft_generator or self._generate_draft
+        if isinstance(self.dispatcher, LocalWorkflowDispatcher):
+            self.dispatcher.bind(self)
 
-    @staticmethod
-    def _generate_draft(request):
-        safe_text, note = policy.check_input(request["summary"])
-        prompt = [
-            {
-                "role": "system",
-                "content": (
-                    "You draft concise Amazon-style customer-support resolutions for human review. "
-                    "Do not claim an action happened. Do not invent order facts, refunds, dates, or identifiers. "
-                    "State what should be checked or done, and make clear this is a proposed response."
-                ),
-            },
-            {"role": "user", "content": safe_text + (f"\nSafety note: {note}" if note else "")},
-        ]
-        raw = chat(prompt, temperature=0.1)
-        return policy.check_output(raw, WorkingMemory(), safe_text), {"type": "send_resolution"}
+    def close(self):
+        close = getattr(self.dispatcher, "close", None)
+        if close:
+            close()
+
+    def _generate_draft(self, request):
+        from support_chatbot import agent_profile, plan_execute, planner
+        from support_chatbot.memory import ConversationMemory, LongTermMemory
+
+        with system_identity():
+            context = self.repository.get_request_agent_context(request["id"])
+        if not context or not context["session_id"]:
+            safe_text, note = policy.check_input(request["summary"])
+            prompt = [{"role": "system", "content": agent_profile.system_prompt()},
+                      {"role": "user", "content": safe_text + (f"\nSafety note: {note}" if note else "")}]
+            raw = chat(prompt, temperature=0.1)
+            return policy.check_output(raw, WorkingMemory(), safe_text), {"type": "send_resolution"}
+
+        token = set_identity(context["identity"])
+        try:
+            persisted = self.repository.load_session(context["session_id"]) or {"history": [], "work": {}}
+            conversation = ConversationMemory.from_dict(
+                agent_profile.system_prompt(), {"history": persisted["history"]}
+            )
+            work = WorkingMemory.from_dict(persisted["work"])
+            safe_text, note = policy.check_input(request["summary"])
+            engine = plan_execute.plan_execute if context["planner"] == "plan" else planner.react
+            steps = []
+            raw = engine(
+                conversation, work, trace=False, steps=steps,
+                longterm=LongTermMemory(self.repository), extra=note,
+            )
+            safe = policy.check_output(raw, work, safe_text)
+            conversation.persist_safe_reply(raw, safe)
+            self.repository.save_session(
+                context["session_id"], conversation.history, work.to_dict(), context["planner"]
+            )
+            self.repository.remember(work.to_dict(), context["session_id"])
+            evidence = []
+            proposed = None
+            for step in steps:
+                observation = step.get("observation") or {}
+                if step.get("tool") == "search_knowledge":
+                    evidence.extend(observation.get("passages") or [])
+                if observation.get("proposal"):
+                    proposed = {
+                        "type": observation["action"],
+                        "arguments": observation["arguments"],
+                        "customer_consequences": observation["consequences"],
+                        "policy_evidence": observation["policy_evidence"],
+                        "order_version": observation["order_version"],
+                        "action_hash": observation["action_hash"],
+                        "customer_confirmed": True,
+                    }
+            return safe, proposed or {
+                "type": "send_resolution", "arguments": {},
+                "policy_evidence": evidence,
+            }
+        finally:
+            reset_identity(token)
 
     def enqueue(self, request):
         phase = "execute" if request["status"] == "APPROVED" else "draft"

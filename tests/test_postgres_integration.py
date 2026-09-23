@@ -119,8 +119,16 @@ def test_postgres_workflow_is_idempotent_and_resumable():
                 request["id"], "Proposed response", {"type": "send_resolution"}, 24
             )
             repository.decide_support_request(
-                request["id"], True, "integration test", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+                request["id"], True, "integration test",
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "Edited proposed response", True,
             )
+            detail = repository.get_approval_detail(request["id"])
+            assert detail["proposed_response"] == "Edited proposed response"
+            assert detail["review_necessary"] is True
+            assert {event["event_type"] for event in detail["audit_history"]} >= {
+                "approval_created", "approval_approved",
+            }
             assert repository.claim_execution(request["id"], 30) is not None
             first = repository.complete_execution(request["id"])
             second = repository.complete_execution(request["id"])
@@ -133,6 +141,10 @@ def test_postgres_workflow_is_idempotent_and_resumable():
             assert count == 1
     finally:
         with repository.pool.connection() as connection:
+            connection.execute(
+                "delete from public.audit_events where resource_type='support_request' and resource_id=%s",
+                (str(request["id"]),),
+            )
             connection.execute("delete from public.support_requests where id=%s", (request["id"],))
         repository.logout(session_token)
         repository.close()
@@ -161,6 +173,7 @@ def test_postgres_sealed_action_executes_once_after_both_approvals():
             repository.decide_support_request(
                 request["id"], True, "sealed action verified",
                 "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                review_necessary=True,
             )
             assert repository.claim_execution(request["id"], 30) is not None
             first = repository.complete_execution(request["id"])
@@ -176,6 +189,10 @@ def test_postgres_sealed_action_executes_once_after_both_approvals():
     finally:
         with repository.pool.connection() as connection:
             if request:
+                connection.execute(
+                    "delete from public.audit_events where resource_type='support_request' and resource_id=%s",
+                    (str(request["id"]),),
+                )
                 connection.execute("delete from public.support_requests where id=%s", (request["id"],))
             if proposal:
                 connection.execute("delete from public.action_proposals where id=%s", (proposal["proposal_id"],))

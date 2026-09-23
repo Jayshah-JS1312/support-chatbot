@@ -1,6 +1,7 @@
 """Validated HTTP request and error schemas."""
 
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -56,6 +57,13 @@ class ChatRequest(StrictRequest):
 
 class ApprovalDecisionRequest(StrictRequest):
     decision: Literal["approve", "reject"]
+    reason: str = Field(default="", max_length=2_000)
+    edited_response: str | None = Field(default=None, max_length=20_000)
+    review_necessary: bool
+
+
+class ApprovalReassignRequest(StrictRequest):
+    admin_user_id: UUID
     reason: str = Field(default="", max_length=2_000)
 
 

@@ -420,6 +420,12 @@ class PostgresRepository:
                 values(%s,'pending',now()+make_interval(hours => %s))""",
                 (draft["id"], settings.approval_ttl_hours),
             )
+            conn.execute("""insert into public.audit_events
+                (user_id,actor_type,actor_id,event_type,resource_type,resource_id,request_id,detail)
+                values(%s,'customer',%s,'approval_created','support_request',%s,%s,%s)""",
+                (identity.user_id, identity.user_id, str(request["id"]), str(request["id"]),
+                 Jsonb({"draft_id": str(draft["id"]), "action": proposal["action_name"],
+                        "deadline_hours": settings.approval_ttl_hours})),)
             conn.execute(
                 "update public.action_proposals set status='confirmed',customer_confirmed_at=now() where id=%s",
                 (proposal_id,),
@@ -451,6 +457,21 @@ class PostgresRepository:
                 where r.id=%s""", (request_id,),
             ).fetchone()
         return self._workflow_request(row)
+
+    def get_request_agent_context(self, request_id):
+        with self.connection() as conn:
+            row = conn.execute("""select p.id,p.email,p.display_name,p.role,
+                c.browser_session_id,r.metadata from public.support_requests r
+                join public.profiles p on p.id=r.user_id
+                left join public.conversations c on c.id=r.conversation_id
+                where r.id=%s""", (request_id,)).fetchone()
+        if not row:
+            return None
+        return {
+            "identity": Identity(str(row["id"]), row["email"], row["display_name"], row["role"]),
+            "session_id": row["browser_session_id"],
+            "planner": (row["metadata"] or {}).get("planner", "react"),
+        }
 
     def mark_enqueued(self, request_id, workflow_run_id):
         with self.connection() as conn:
@@ -503,14 +524,37 @@ class PostgresRepository:
             ).fetchone()
             if not request:
                 return None
+            proposed_action = proposed_action or {"type": "send_resolution"}
+            action_name = proposed_action.get("type", "send_resolution")
+            arguments = proposed_action.get("arguments") or {}
+            order = None
+            if arguments.get("order_id"):
+                order = conn.execute(
+                    "select id from public.orders where order_number=%s",
+                    (arguments["order_id"],),
+                ).fetchone()
             draft = conn.execute(
                 """insert into public.resolution_drafts
-                (support_request_id,content,proposed_action,status)
-                values(%s,%s,%s,'pending_approval')
+                (support_request_id,content,proposed_action,status,action_name,
+                 action_arguments,customer_consequences,policy_evidence,order_version,
+                 action_hash,customer_confirmed_at)
+                values(%s,%s,%s,'pending_approval',%s,%s,%s,%s,%s,%s,
+                  case when %s then now() else null end)
                 on conflict(support_request_id) do update set
                 content=excluded.content,proposed_action=excluded.proposed_action,
+                action_name=excluded.action_name,action_arguments=excluded.action_arguments,
+                customer_consequences=excluded.customer_consequences,
+                policy_evidence=excluded.policy_evidence,order_version=excluded.order_version,
+                action_hash=excluded.action_hash,
+                customer_confirmed_at=excluded.customer_confirmed_at,
                 status='pending_approval',version=resolution_drafts.version+1,updated_at=now()
-                returning id""", (request_id, content, Jsonb(proposed_action)),
+                returning id""", (
+                    request_id, content, Jsonb(proposed_action), action_name,
+                    Jsonb(arguments), Jsonb(proposed_action.get("customer_consequences") or {}),
+                    Jsonb(proposed_action.get("policy_evidence") or {}),
+                    proposed_action.get("order_version"), proposed_action.get("action_hash"),
+                    bool(proposed_action.get("customer_confirmed")),
+                ),
             ).fetchone()
             conn.execute(
                 """insert into public.approval_tasks(resolution_draft_id,status,expires_at)
@@ -519,17 +563,113 @@ class PostgresRepository:
                 expires_at=excluded.expires_at,decision_reason=null,decided_at=null""",
                 (draft["id"], approval_ttl_hours),
             )
+            conn.execute("""insert into public.audit_events
+                (user_id,actor_type,actor_id,event_type,resource_type,resource_id,request_id,detail)
+                values(%s,'system','workflow','approval_created','support_request',%s,%s,%s)""",
+                (request["user_id"], str(request_id), str(request_id), Jsonb({
+                    "draft_id": str(draft["id"]), "action": action_name,
+                    "deadline_hours": approval_ttl_hours,
+                })),)
             row = conn.execute(
-                """update public.support_requests set status='AWAITING_APPROVAL',
+                """update public.support_requests set status='AWAITING_APPROVAL',order_id=coalesce(%s,order_id),
                 processing_lease_until=null,updated_at=now() where id=%s
-                and status='DRAFTING' returning *""", (request_id,),
+                and status='DRAFTING' returning *""",
+                (order["id"] if order else None, request_id),
             ).fetchone()
         return self._workflow_request(row)
 
-    def decide_support_request(self, request_id, approve, reason, admin_user_id):
+    def list_approval_tasks(self, status="pending"):
+        clauses = {
+            "pending": "a.status='pending' and a.expires_at>now()",
+            "overdue": "a.status='pending' and a.expires_at<=now()",
+            "approved": "a.status='approved'",
+            "rejected": "a.status='rejected'",
+            "expired": "a.status='expired'",
+        }
+        where = clauses.get(status, "true")
+        with self.connection() as conn:
+            rows = conn.execute(f"""select a.id,r.id as request_id,r.reference_number,
+                r.summary as customer_request,r.status as request_status,a.status,
+                a.expires_at,a.created_at,a.decided_at,a.review_necessary,
+                p.email as customer_email,p.display_name as customer_name,
+                reviewer.display_name as reviewer_name,
+                extract(epoch from (now()-a.created_at))::int as age_seconds
+                from public.approval_tasks a
+                join public.resolution_drafts d on d.id=a.resolution_draft_id
+                join public.support_requests r on r.id=d.support_request_id
+                join public.profiles p on p.id=r.user_id
+                left join public.profiles reviewer on reviewer.id=a.assigned_to
+                where {where} order by
+                case when a.status='pending' then a.expires_at end asc nulls last,
+                a.created_at desc""").fetchall()
+        return [self._workflow_request(row) for row in rows]
+
+    def get_approval_detail(self, request_id):
+        with self.connection() as conn:
+            row = conn.execute("""select a.id as approval_id,a.status as approval_status,
+                a.assigned_to,a.decision_reason,a.expires_at,a.decided_at,a.created_at,
+                a.review_necessary,d.content as proposed_response,d.proposed_action,
+                d.action_name,d.action_arguments,d.customer_consequences,d.policy_evidence,
+                d.order_version,d.action_hash,d.version as draft_version,
+                r.id as request_id,r.reference_number,r.summary as customer_request,
+                r.status as request_status,r.conversation_id,r.created_at as request_created_at,
+                p.email as customer_email,p.display_name as customer_name,
+                o.order_number,o.item_name,o.price,o.status as order_status,o.version as current_order_version,
+                reviewer.display_name as reviewer_name,reviewer.email as reviewer_email
+                from public.approval_tasks a
+                join public.resolution_drafts d on d.id=a.resolution_draft_id
+                join public.support_requests r on r.id=d.support_request_id
+                join public.profiles p on p.id=r.user_id
+                left join public.orders o on o.id=r.order_id
+                left join public.profiles reviewer on reviewer.id=a.assigned_to
+                where r.id=%s""", (request_id,)).fetchone()
+            if not row:
+                return None
+            messages = []
+            if row["conversation_id"]:
+                messages = conn.execute("""select role,content,created_at from public.messages
+                    where conversation_id=%s and role in ('user','assistant')
+                    and content is not null and content<>''
+                    order by sequence_number""", (row["conversation_id"],)).fetchall()
+            audits = conn.execute("""select event_type,actor_id,detail,created_at
+                from public.audit_events where resource_type='support_request'
+                and resource_id=%s order by created_at""", (str(request_id),)).fetchall()
+        result = self._workflow_request(row)
+        result["conversation"] = [self._workflow_request(message) for message in messages]
+        result["audit_history"] = [self._workflow_request(event) for event in audits]
+        return result
+
+    def list_admin_reviewers(self):
+        with self.connection() as conn:
+            rows = conn.execute("""select id,email,display_name from public.profiles
+                where role='admin' order by display_name,email""").fetchall()
+        return [{**dict(row), "id": str(row["id"])} for row in rows]
+
+    def decide_support_request(self, request_id, approve, reason, admin_user_id,
+                               edited_response=None, review_necessary=None):
         target = "APPROVED" if approve else "REJECTED"
         approval = "approved" if approve else "rejected"
         with self.connection() as conn:
+            draft = conn.execute("""select d.id,d.content,d.version from public.resolution_drafts d
+                join public.support_requests r on r.id=d.support_request_id
+                where r.id=%s and r.status='AWAITING_APPROVAL' for update""",
+                (request_id,)).fetchone()
+            if not draft:
+                existing = conn.execute("select * from public.support_requests where id=%s", (request_id,)).fetchone()
+                if existing and existing["status"] == target:
+                    return self._workflow_request(existing)
+                raise InvalidWorkflowTransition(request_id)
+            final_response = edited_response.strip() if edited_response and edited_response.strip() else draft["content"]
+            if final_response != draft["content"]:
+                conn.execute("""update public.resolution_drafts set content=%s,
+                    version=version+1,updated_at=now() where id=%s""",
+                    (final_response, draft["id"]),)
+                conn.execute("""update public.messages set content=%s
+                    where id=(select m.id from public.messages m
+                      join public.support_requests r on r.conversation_id=m.conversation_id
+                      where r.id=%s and m.role='assistant' and m.content is not null
+                      order by m.sequence_number desc limit 1)""",
+                    (final_response, request_id),)
             row = conn.execute(
                 """update public.support_requests set status=%s,
                 enqueued_at=case when %s then null else enqueued_at end,
@@ -538,23 +678,50 @@ class PostgresRepository:
                 where id=%s and status='AWAITING_APPROVAL' returning *""",
                 (target, approve, approve, approve, request_id),
             ).fetchone()
-            if not row:
-                existing = conn.execute("select * from public.support_requests where id=%s", (request_id,)).fetchone()
-                if existing and existing["status"] == target:
-                    return self._workflow_request(existing)
-                raise InvalidWorkflowTransition(request_id)
             conn.execute(
                 """update public.approval_tasks a set status=%s,assigned_to=%s,
-                decision_reason=%s,decided_at=now(),
+                decision_reason=%s,decided_at=now(),review_necessary=%s,
                 approved_action_hash=case when %s then d.action_hash else null end
                 from public.resolution_drafts d
                 where a.resolution_draft_id=d.id and d.support_request_id=%s""",
-                (approval, admin_user_id, reason, approve, request_id),
+                (approval, admin_user_id, reason, review_necessary, approve, request_id),
             )
+            conn.execute("""insert into public.audit_events
+                (user_id,actor_type,actor_id,event_type,resource_type,resource_id,request_id,detail)
+                values(%s,'admin',%s,%s,'support_request',%s,%s,%s)""",
+                (admin_user_id, str(admin_user_id),
+                 "approval_approved" if approve else "approval_rejected",
+                 str(request_id), str(request_id), Jsonb({
+                     "reason": reason, "review_necessary": review_necessary,
+                     "response_edited": final_response != draft["content"],
+                     "draft_version": draft["version"] + (1 if final_response != draft["content"] else 0),
+                     "original_response_hash": hashlib.sha256(draft["content"].encode()).hexdigest(),
+                     "final_response_hash": hashlib.sha256(final_response.encode()).hexdigest(),
+                 })),)
             if not approve:
                 conn.execute("update public.support_requests set status='COMPLETED' where id=%s", (request_id,))
                 row["status"] = "COMPLETED"
         return self._workflow_request(row)
+
+    def reassign_approval(self, request_id, assignee_id, reason, admin_user_id):
+        with self.connection() as conn:
+            assignee = conn.execute(
+                "select id from public.profiles where id=%s and role='admin'", (assignee_id,)
+            ).fetchone()
+            if not assignee:
+                raise ActionProposalError("Assignee must be an administrator")
+            row = conn.execute("""update public.approval_tasks a set assigned_to=%s,
+                reassigned_at=now() from public.resolution_drafts d
+                where a.resolution_draft_id=d.id and d.support_request_id=%s
+                and a.status='pending' returning a.id""", (assignee_id, request_id)).fetchone()
+            if not row:
+                raise InvalidWorkflowTransition(request_id)
+            conn.execute("""insert into public.audit_events
+                (user_id,actor_type,actor_id,event_type,resource_type,resource_id,request_id,detail)
+                values(%s,'admin',%s,'approval_reassigned','support_request',%s,%s,%s)""",
+                (admin_user_id, str(admin_user_id), str(request_id), str(request_id),
+                 Jsonb({"assigned_to": str(assignee_id), "reason": reason})),)
+        return self.get_approval_detail(request_id)
 
     def claim_execution(self, request_id, lease_seconds):
         with self.connection() as conn:
@@ -680,8 +847,14 @@ class PostgresRepository:
                   from public.resolution_drafts d, expired e where d.id=e.resolution_draft_id
                   and r.id=d.support_request_id and r.status='AWAITING_APPROVAL' returning r.id
                 ) update public.support_requests r set status='COMPLETED_WITHOUT_ACTION',
-                  completed_at=now(),updated_at=now() from requests x where r.id=x.id returning r.id"""
+                  completed_at=now(),updated_at=now() from requests x where r.id=x.id
+                  returning r.id,r.user_id"""
             ).fetchall()
+            for row in rows:
+                conn.execute("""insert into public.audit_events
+                    (user_id,actor_type,actor_id,event_type,resource_type,resource_id,request_id,detail)
+                    values(%s,'system','workflow','approval_expired','support_request',%s,%s,'{}')""",
+                    (row["user_id"], str(row["id"]), str(row["id"])),)
         return [str(row["id"]) for row in rows]
 
     def record_dead_letter(self, request_id, workflow_run_id, status, body, headers):
@@ -807,6 +980,7 @@ class InMemoryRepository:
         self.action_executions = {}
         self.dead_letters = []
         self.action_proposals = {}
+        self.audit_events = []
 
     def healthcheck(self): return True
     def _visible(self, owner):
@@ -932,10 +1106,22 @@ class InMemoryRepository:
                "expires_at": (datetime.now(timezone.utc) + timedelta(hours=settings.approval_ttl_hours)).isoformat()}
         self.support_requests[request_id] = row; self.request_keys[key] = request_id
         proposal["status"] = "confirmed"
+        self.audit_events.append({"event_type": "approval_created", "actor_id": identity.user_id,
+                                  "resource_id": request_id,
+                                  "detail": {"action": proposal["action"],
+                                             "deadline_hours": settings.approval_ttl_hours},
+                                  "created_at": datetime.now(timezone.utc).isoformat()})
         return copy.deepcopy(row), True
     def get_support_request(self, request_id):
         row = self.support_requests.get(str(request_id))
         return copy.deepcopy(row) if row and self._visible(row["user_id"]) else None
+    def get_request_agent_context(self, request_id):
+        row = self.support_requests.get(str(request_id))
+        if not row: return None
+        profile = next(p for p in self.profiles.values() if p["id"] == row["user_id"])
+        return {"identity": Identity(profile["id"], profile["email"], profile["display_name"], profile["role"]),
+                "session_id": row.get("conversation_id"),
+                "planner": row.get("metadata", {}).get("planner", "react")}
     def mark_enqueued(self, request_id, workflow_run_id):
         row = self.support_requests.get(str(request_id))
         if not row or row["status"] not in {"RECEIVED", "QUEUED", "APPROVED"}: return None
@@ -959,20 +1145,98 @@ class InMemoryRepository:
     def save_resolution_draft(self, request_id, content, proposed_action, approval_ttl_hours):
         row = self.support_requests.get(str(request_id))
         if not row or row["status"] != "DRAFTING": return None
+        proposed_action = proposed_action or {"type": "send_resolution"}
         row.update({"status": "AWAITING_APPROVAL", "draft_content": content,
                     "proposed_action": copy.deepcopy(proposed_action), "approval_status": "pending",
+                    "action_name": proposed_action.get("type", "send_resolution"),
+                    "action_arguments": copy.deepcopy(proposed_action.get("arguments") or {}),
+                    "customer_consequences": copy.deepcopy(proposed_action.get("customer_consequences") or {}),
+                    "policy_evidence": copy.deepcopy(proposed_action.get("policy_evidence") or {}),
+                    "order_version": proposed_action.get("order_version"),
+                    "action_hash": proposed_action.get("action_hash"),
+                    "customer_confirmed_at": (datetime.now(timezone.utc).isoformat()
+                                              if proposed_action.get("customer_confirmed") else None),
                     "expires_at": (datetime.now(timezone.utc) + timedelta(hours=approval_ttl_hours)).isoformat(),
                     "processing_lease_until": None})
+        self.audit_events.append({"event_type": "approval_created", "actor_id": "workflow",
+                                  "resource_id": str(request_id),
+                                  "detail": {"action": row["action_name"],
+                                             "deadline_hours": approval_ttl_hours},
+                                  "created_at": datetime.now(timezone.utc).isoformat()})
         return copy.deepcopy(row)
-    def decide_support_request(self, request_id, approve, reason, admin_user_id):
+    def list_approval_tasks(self, status="pending"):
+        now = datetime.now(timezone.utc)
+        rows = []
+        for row in self.support_requests.values():
+            task_status = row.get("approval_status")
+            expires = datetime.fromisoformat(row["expires_at"]) if row.get("expires_at") else now
+            matches = (
+                (status == "pending" and task_status == "pending" and expires > now)
+                or (status == "overdue" and task_status == "pending" and expires <= now)
+                or task_status == status
+                or status == "all"
+            )
+            if matches:
+                rows.append({"request_id": row["id"], "reference_number": row["reference_number"],
+                             "customer_request": row["summary"], "status": task_status,
+                             "request_status": row["status"], "expires_at": row.get("expires_at"),
+                             "review_necessary": row.get("review_necessary")})
+        return copy.deepcopy(rows)
+
+    def get_approval_detail(self, request_id):
+        row = self.support_requests.get(str(request_id))
+        if not row:
+            return None
+        result = copy.deepcopy(row)
+        result.update({"request_id": row["id"], "customer_request": row["summary"],
+                       "proposed_response": row.get("draft_content"),
+                       "audit_history": [copy.deepcopy(event) for event in self.audit_events
+                                         if event["resource_id"] == str(request_id)],
+                       "conversation": []})
+        return result
+
+    def list_admin_reviewers(self):
+        return [{"id": p["id"], "email": p["email"], "display_name": p["display_name"]}
+                for p in self.profiles.values() if p["role"] == "admin"]
+
+    def decide_support_request(self, request_id, approve, reason, admin_user_id,
+                               edited_response=None, review_necessary=None):
         row = self.support_requests.get(str(request_id)); target = "APPROVED" if approve else "COMPLETED"
         if not row: raise InvalidWorkflowTransition(request_id)
         if row["status"] == target: return copy.deepcopy(row)
         if row["status"] != "AWAITING_APPROVAL": raise InvalidWorkflowTransition(request_id)
+        edited = bool(edited_response and edited_response.strip()
+                      and edited_response.strip() != row.get("draft_content"))
+        if edited:
+            row["draft_content"] = edited_response.strip()
+            session = self.sessions.get(row.get("conversation_id"))
+            if session:
+                for message in reversed(session.get("history", [])):
+                    if message.get("role") == "assistant" and message.get("content"):
+                        message["content"] = row["draft_content"]
+                        break
         row.update({"status": target, "approval_status": "approved" if approve else "rejected",
-                    "decision_reason": reason, "assigned_to": admin_user_id})
+                    "decision_reason": reason, "assigned_to": admin_user_id,
+                    "review_necessary": review_necessary})
         if approve: row["approved_action_hash"] = row.get("action_hash")
+        self.audit_events.append({"event_type": "approval_approved" if approve else "approval_rejected",
+                                  "actor_id": admin_user_id, "resource_id": str(request_id),
+                                  "detail": {"reason": reason, "review_necessary": review_necessary,
+                                             "response_edited": edited},
+                                  "created_at": datetime.now(timezone.utc).isoformat()})
         return copy.deepcopy(row)
+    def reassign_approval(self, request_id, assignee_id, reason, admin_user_id):
+        row = self.support_requests.get(str(request_id))
+        assignee = next((p for p in self.profiles.values()
+                         if p["id"] == str(assignee_id) and p["role"] == "admin"), None)
+        if not assignee: raise ActionProposalError("Assignee must be an administrator")
+        if not row or row.get("approval_status") != "pending": raise InvalidWorkflowTransition(request_id)
+        row["assigned_to"] = str(assignee_id)
+        self.audit_events.append({"event_type": "approval_reassigned", "actor_id": admin_user_id,
+                                  "resource_id": str(request_id),
+                                  "detail": {"assigned_to": str(assignee_id), "reason": reason},
+                                  "created_at": datetime.now(timezone.utc).isoformat()})
+        return self.get_approval_detail(request_id)
     def claim_execution(self, request_id, lease_seconds):
         row = self.support_requests.get(str(request_id))
         if not row or row["status"] != "APPROVED": return None
@@ -985,7 +1249,7 @@ class InMemoryRepository:
         key = f"support-request:{request_id}:execute"
         if key in self.action_executions: return copy.deepcopy(row)
         action = row.get("action_name")
-        if action:
+        if action and action != "send_resolution":
             computed = action_hash(action, row["action_arguments"], row["customer_consequences"], row["policy_evidence"], row["order_version"])
             if not row.get("customer_confirmed_at") or computed != row.get("action_hash") or computed != row.get("approved_action_hash"):
                 self.action_executions[key] = {
@@ -1011,6 +1275,9 @@ class InMemoryRepository:
         for row in self.support_requests.values():
             if row["status"] == "AWAITING_APPROVAL" and datetime.fromisoformat(row["expires_at"]) <= now:
                 row["status"] = "COMPLETED_WITHOUT_ACTION"; row["approval_status"] = "expired"; expired.append(row["id"])
+                self.audit_events.append({"event_type": "approval_expired", "actor_id": "workflow",
+                                          "resource_id": row["id"], "detail": {},
+                                          "created_at": now.isoformat()})
         return expired
     def record_dead_letter(self, request_id, workflow_run_id, status, body, headers):
         entry = {"request_id": str(request_id), "workflow_run_id": workflow_run_id, "status": status, "body": body, "headers": headers}

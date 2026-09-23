@@ -2,6 +2,7 @@
 
 import re
 import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -133,13 +134,24 @@ class RequestBoundaryMiddleware:
 
 
 def create_app(runtime_state=None):
+    state = runtime_state or RuntimeState()
+
+    @asynccontextmanager
+    async def lifespan(app):
+        app.state.runtime.workflow.recover()
+        try:
+            yield
+        finally:
+            app.state.runtime.close()
+
     app = FastAPI(
         title="Ami Customer Support Agent",
         version="0.1.0",
         docs_url=None,
         redoc_url=None,
+        lifespan=lifespan,
     )
-    app.state.runtime = runtime_state or RuntimeState()
+    app.state.runtime = state
     app.add_middleware(
         RequestBoundaryMiddleware,
         max_request_bytes=settings.max_request_bytes,

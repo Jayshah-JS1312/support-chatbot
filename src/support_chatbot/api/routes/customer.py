@@ -39,7 +39,8 @@ def chat_page(request: Request):
 def current_state(request: Request, context=Depends(session)):
     app_runtime = runtime(request)
     with app_runtime.get_turn_lock(context.sid):
-        return {**app_runtime.public_state(context.session), "stale": context.stale}
+        refreshed = app_runtime.reload_session(context.sid, context.session.get("user_id"))
+        return {**app_runtime.public_state(refreshed), "stale": context.stale}
 
 
 @router.post("/reset")
@@ -108,6 +109,11 @@ def submit_request(
             status_code=409,
             detail="Idempotency-Key was already used with a different request",
         ) from error
+    if created:
+        with app_runtime.get_turn_lock(context.sid):
+            context.session["convo"].add_user(text)
+            context.session["work"].turn += 1
+            app_runtime.save_sessions(context.sid)
     should_enqueue = created or (row["status"] in {"RECEIVED", "APPROVED"} and not row.get("enqueued_at"))
     enqueued = None
     if should_enqueue:

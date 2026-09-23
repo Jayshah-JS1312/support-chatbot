@@ -48,6 +48,7 @@ deployment unless the route is protected by operator authentication.
 | `/readyz` | Readiness and model name | aggregate, no customer data |
 | `/metrics` | Prometheus metrics | aggregate, no customer data |
 | `/monitoring` | Operator dashboard | authenticated admin only |
+| `/admin/approvals` | Human approval inbox | authenticated admin only |
 | `/evals` | Retrieval evaluation dashboard | authenticated admin only |
 | `/trace.jsonl` | Raw agent events | authenticated admin only |
 | `POST /chat` | Store and enqueue a request; returns `202` | authenticated customer |
@@ -55,6 +56,7 @@ deployment unless the route is protected by operator authentication.
 | `POST /actions/preview` | Create a non-mutating sealed action preview | authenticated customer |
 | `POST /actions/proposals/{id}/confirm` | Confirm the exact seal and create an approval task; returns `202` | authenticated owner |
 | `POST /admin/requests/{id}/decision` | Approve or reject the sealed draft | authenticated admin |
+| `POST /admin/requests/{id}/reassign` | Assign pending work to another admin | authenticated admin |
 | `POST /workflow/requests` | Signed Upstash workflow delivery | QStash only |
 | `POST /workflow/recover` | Retry stored-but-unenqueued work | authenticated admin |
 | `POST /workflow/expire` | Apply the approval absence policy | authenticated admin |
@@ -62,6 +64,11 @@ deployment unless the route is protected by operator authentication.
 The demo password-reset endpoint can expose its token only when
 `SUPPORT_CHATBOT_EXPOSE_RESET_TOKEN=true`. Keep this disabled in every deployed
 environment and connect reset-token delivery to a transactional email provider.
+
+Without QStash credentials the application automatically uses a local
+background dispatcher. This makes Docker development functional but is not a
+multi-instance production queue. Production deployments must configure the
+three QStash credentials and a public HTTPS base URL.
 
 ## Hosted Supabase
 

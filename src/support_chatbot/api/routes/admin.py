@@ -7,9 +7,9 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from support_chatbot import dashboard, observe
 from support_chatbot.api.dependencies import require_admin, require_internal_ui, runtime
-from support_chatbot.api.models import ApprovalDecisionRequest
+from support_chatbot.api.models import ApprovalDecisionRequest, ApprovalReassignRequest
 from support_chatbot.llm import MODEL
-from support_chatbot.persistence import InvalidWorkflowTransition
+from support_chatbot.persistence import ActionProposalError, InvalidWorkflowTransition
 
 
 router = APIRouter(
@@ -23,6 +23,31 @@ router = APIRouter(
 @router.get("/admin", response_class=HTMLResponse)
 def monitoring_page(_=Depends(require_internal_ui)):
     return HTMLResponse(dashboard.PAGE)
+
+
+@router.get("/admin/approvals", response_class=HTMLResponse)
+def approvals_page():
+    return HTMLResponse(dashboard.APPROVAL_PAGE)
+
+
+@router.get("/admin/approvals.json")
+def approvals_data(request: Request, status: str = "pending"):
+    if status not in {"pending", "overdue", "approved", "rejected", "expired", "all"}:
+        raise HTTPException(status_code=422, detail="Unknown approval filter")
+    app_runtime = runtime(request)
+    return {
+        "items": app_runtime.repository.list_approval_tasks(status),
+        "reviewers": app_runtime.repository.list_admin_reviewers(),
+        "filter": status,
+    }
+
+
+@router.get("/admin/approvals/{request_id}.json")
+def approval_detail(request_id: str, request: Request):
+    row = runtime(request).repository.get_approval_detail(request_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Approval request not found")
+    return row
 
 
 @router.get("/logs.json")
@@ -59,7 +84,8 @@ def decide_request(
     approve = payload.decision == "approve"
     try:
         row = app_runtime.repository.decide_support_request(
-            request_id, approve, payload.reason.strip(), admin.user_id
+            request_id, approve, payload.reason.strip(), admin.user_id,
+            payload.edited_response, payload.review_necessary,
         )
     except InvalidWorkflowTransition as error:
         raise HTTPException(status_code=409, detail="Request is not awaiting approval") from error
@@ -71,3 +97,18 @@ def decide_request(
         "state": row["status"],
         "enqueue_status": "queued" if enqueued else ("pending_recovery" if approve else "not_required"),
     }
+
+
+@router.post("/admin/requests/{request_id}/reassign")
+def reassign_request(
+    request_id: str,
+    payload: ApprovalReassignRequest,
+    request: Request,
+    admin=Depends(require_admin),
+):
+    try:
+        return runtime(request).repository.reassign_approval(
+            request_id, payload.admin_user_id, payload.reason.strip(), admin.user_id
+        )
+    except (InvalidWorkflowTransition, ActionProposalError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error

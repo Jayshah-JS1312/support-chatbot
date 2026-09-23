@@ -15,6 +15,12 @@
 7. Execution claims the request and inserts an action using a unique execution
    idempotency key before completing. Duplicate deliveries are safe no-ops.
 
+When QStash credentials are absent, local Docker uses an in-process queue
+worker. HTTP submission still returns before model work begins, and PostgreSQL
+remains the source of truth. Startup recovery re-enqueues persisted work. This
+dispatcher is for one-process local development; deployed instances use signed
+Upstash delivery so work survives process and host loss.
+
 Cancellation and return requests add a stricter boundary before step 3. The
 customer first receives a non-mutating preview from `POST /actions/preview`.
 That preview contains the exact normalized arguments, customer consequences,
@@ -70,6 +76,13 @@ business idempotency key. Failed enqueue attempts remain `RECEIVED` or
 `APPROVED` and are retried by `/workflow/recover`. Exhausted Upstash retries
 are recorded in `workflow_dead_letters`. `/workflow/expire` implements the
 absence policy: expire and complete without action—never execute silently.
+
+`/admin/approvals` is the human decision surface. It presents the customer
+request, conversation, verified order facts, retrieved evidence, draft response,
+exact action, consequences, age, deadline, and audit history. Decisions require
+the reviewer to label whether human review was genuinely necessary. Approval,
+response edits, rejection, reassignment, reviewer identity, and timestamps are
+durably audited.
 
 ## Authentication and authorization
 

@@ -17,3 +17,4 @@ from . import UI_DIR
 
 PAGE = (UI_DIR / "logs.html").read_text()
 EVAL_PAGE = (UI_DIR / "evals.html").read_text()
+APPROVAL_PAGE = (UI_DIR / "approvals.html").read_text()

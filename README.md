@@ -24,6 +24,7 @@ baseline.
 - PostgreSQL RLS-backed ownership isolation for customer data
 - Durable `202 Accepted` support requests orchestrated by Upstash Workflow
 - Human-approval state machine with retries, expiry, recovery, and dead letters
+- Admin approval inbox with filtering, editing, reassignment, and audit history
 - End-to-end idempotency for submissions, deliveries, and action execution
 - Cryptographically sealed cancellation/return proposals with optimistic revalidation
 - Operations dashboard plus health, readiness, and Prometheus metrics endpoints
@@ -74,6 +75,7 @@ development tooling that expects an ASGI import string, use
 The browser UI is available at <http://127.0.0.1:8000>. When internal views are
 enabled, the monitoring console is at <http://127.0.0.1:8000/monitoring>.
 The retrieval evaluation dashboard is at <http://127.0.0.1:8000/evals>.
+The admin approval inbox is at <http://127.0.0.1:8000/admin/approvals>.
 Internal traces can contain customer text, so put that route behind operator
 authentication in production.
 
@@ -128,6 +130,7 @@ The repository now has a FastAPI/Uvicorn service, durable PostgreSQL business
 state, customer/admin authentication, ownership isolation, and an asynchronous
 human-approval workflow. Privileged actions are previewed, customer-confirmed,
 cryptographically sealed, human-approved, and revalidated immediately before
-exactly-once execution. It is not ready for real customer traffic until the
-operator queue UI, encrypted customer-data operations, rate limiting,
+exactly-once execution. Administrators review work in a durable approval inbox,
+including context, evidence, edits, reassignment, and an audit trail. It is not
+ready for real customer traffic until encrypted customer-data operations, rate limiting,
 TLS/reverse-proxy configuration, and email-based reset delivery are complete.
