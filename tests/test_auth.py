@@ -54,11 +54,13 @@ def test_admin_can_open_monitoring_and_evaluations():
     try:
         with client_for(get_repository()) as client:
             assert login(client, "admin@example.com", "AdminDemo!2026").status_code == 200
-            assert client.get("/admin").status_code == 200
-            assert client.get("/monitoring").status_code == 200
-            assert client.get("/evals").status_code == 200
-            assert client.get("/admin/approvals").status_code == 200
-            assert client.get("/admin/hitl-evals").status_code == 200
+            for path in ("/admin", "/monitoring", "/evals", "/admin/approvals",
+                         "/admin/hitl-evals"):
+                page = client.get(path)
+                assert page.status_code == 200
+                assert '>Logout</button>' in page.text
+                assert 'href="/">Chat' not in page.text
+                assert 'href="/">Back to chat' not in page.text
             chat = client.get("/", follow_redirects=False)
             assert chat.status_code == 303
             assert chat.headers["location"] == "/admin/approvals"
