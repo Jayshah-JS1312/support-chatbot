@@ -188,6 +188,7 @@ def test_admin_inbox_edit_decision_and_audit_are_durable(workflow_setup):
         detail = admin.get(f"/admin/approvals/{request_id}.json")
         assert detail.status_code == 200
         assert detail.json()["proposed_response"] == "Proposed safe response"
+        assert "conversation" not in detail.json()
         decision = admin.post(f"/admin/requests/{request_id}/decision", json={
             "decision": "approve",
             "reason": "Corrected tone before sending",

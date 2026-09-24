@@ -27,8 +27,10 @@ baseline.
 - Admin approval inbox with filtering, editing, reassignment, and audit history
 - Fail-closed absence policy with reminders, supervisor escalation, hard expiry,
   and accelerated 60/120/300-second demo timing
-- Durable customer workflow cards that restore after refresh/login, poll each
-  ticket through approval and execution, and recover from connection loss
+- Normal customer chat bubbles with a compact notification tray for human-review
+  tickets, restored after refresh/login with connection recovery
+- Strict role-separated surfaces: customers cannot open internal dashboards and
+  administrators cannot use customer chat or customer conversation APIs
 - End-to-end idempotency for submissions, deliveries, and action execution
 - Cryptographically sealed cancellation/return proposals with optimistic revalidation
 - Operations dashboard plus health, readiness, and Prometheus metrics endpoints

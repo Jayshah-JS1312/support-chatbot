@@ -36,6 +36,13 @@ def require_admin(request: Request):
     return user
 
 
+def require_customer(request: Request):
+    user = require_user(request)
+    if user.role != "customer":
+        raise HTTPException(status_code=403, detail="Customer access required")
+    return user
+
+
 def require_internal_ui(request: Request):
     user = require_admin(request)
     if not settings.expose_internal_ui:
@@ -56,7 +63,7 @@ def set_auth_cookie(response, token):
 
 
 def session(request: Request, response: Response):
-    user = require_user(request)
+    user = require_customer(request)
     context = runtime(request).get_session(request.cookies.get("sid"), user.user_id)
     set_session_cookie(response, context)
     return context

@@ -62,22 +62,22 @@ def test_customer_page_mints_securely_scoped_session_cookie(api_client):
     assert "sid=" in cookie
     assert "HttpOnly" in cookie
     assert "SameSite=lax" in cookie
-    for label in (
-        "Request received", "Drafting resolution", "Waiting for human review",
-        "Approved", "Executing", "Completed", "Rejected", "Expired",
-        "Retry status",
-    ):
+    for label in ("Waiting for human review", "Approved", "Rejected", "Expired"):
         assert label in response.text
+    for internal in ("Demo customers", "Agent inspector", "Observability", "Evaluations"):
+        assert internal not in response.text
 
 
-def test_chat_polling_preserves_reader_scroll_and_terminal_cards_are_compact(api_client):
+def test_chat_polling_preserves_reader_scroll_and_uses_ticket_notifications(api_client):
     client, _ = api_client
     page = client.get("/").text
 
     assert "function followsLatest()" in page
     assert "const follow=followsLatest();" in page
-    assert "bubble.append(body);if(follow)scrollToLatest(true);" in page
-    assert ".workflow-card.terminal .workflow-steps" in page
+    assert "if(follow)scrollToLatest(true);" in page
+    assert "function updateTicketNotice" in page
+    assert 'id="ticketTray"' in page
+    assert "workflow-card" not in page
     assert "bubble.append(body);$('chat').scrollTop=$('chat').scrollHeight" not in page
 
 

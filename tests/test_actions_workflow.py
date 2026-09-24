@@ -90,21 +90,16 @@ def test_approved_action_executes_once(action_app):
     assert approved.status_code == 200
     assert dispatcher.calls[-1] == (request_id, "execute")
     assert repository.orders["112-3333333-3333333"]["status"] == "preparing"
-    pending = client.get(f"/requests/{request_id}").json()
-    assert pending["state"] == "APPROVED"
-    assert pending["action"]["pending"] is True
-    assert pending["action"]["complete"] is False
-    assert "reply" not in pending
+    assert client.get(f"/requests/{request_id}").status_code == 403
+    pending = repository.support_requests[request_id]
+    assert pending["status"] == "APPROVED"
 
     assert coordinator.execute(request_id)["state"] == "COMPLETED"
     assert coordinator.execute(request_id) == {"duplicate": True, "state": "COMPLETED"}
     assert repository.orders["112-3333333-3333333"]["status"] == "cancelled"
     assert repository.orders["112-3333333-3333333"]["version"] == 2
     assert len(repository.action_executions) == 1
-    completed = client.get(f"/requests/{request_id}").json()
-    assert completed["state"] == "COMPLETED"
-    assert completed["action"]["complete"] is True
-    assert completed["reply"]
+    assert repository.support_requests[request_id]["status"] == "COMPLETED"
 
 
 def test_stale_approval_fails_without_action(action_app):

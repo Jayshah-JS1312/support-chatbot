@@ -80,20 +80,21 @@ then expire and complete without action—never execute silently. Approval and
 execution both recheck the durable final deadline, so a late decision cannot
 revive work even when the periodic sweep is delayed.
 
-`/admin/approvals` is the human decision surface. It presents the customer
-request, conversation, verified order facts, retrieved evidence, draft response,
-exact action, consequences, age, deadline, and audit history. Decisions require
+`/admin/approvals` is the human decision surface. It presents only the submitted
+request plus verified order facts, retrieved evidence, draft response, exact
+action, consequences, age, deadline, and audit history; it does not expose the
+customer's general conversation history. Decisions require
 the reviewer to label whether human review was genuinely necessary. Approval,
 response edits, rejection, reassignment, reviewer identity, and timestamps are
 durably audited.
 
-The customer UI restores its ticket timeline from `GET /requests`, not browser
-memory. Each card polls `GET /requests/{id}` and distinguishes received,
-drafting, human review, approved-but-not-executed, executing, completed,
-rejected, and expired states. Draft content is returned as a customer answer
-only after the request reaches `COMPLETED`; approval alone never appears as a
-successful account action. The latest owned conversation is restored when the
-browser session cookie is missing.
+The customer UI restores requests from `GET /requests`, not browser memory, and
+polls non-terminal work through `GET /requests/{id}`. Ordinary answers remain
+normal chat bubbles; only human-review work appears in a compact ticket
+notification tray. Draft content is returned as a customer answer only after
+the request reaches `COMPLETED`; approval alone never appears as a successful
+account action. The latest owned conversation is restored when the browser
+session cookie is missing.
 
 ## Authentication and authorization
 

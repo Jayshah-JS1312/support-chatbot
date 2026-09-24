@@ -846,17 +846,10 @@ class PostgresRepository:
                 where r.id=%s""", (request_id,)).fetchone()
             if not row:
                 return None
-            messages = []
-            if row["conversation_id"]:
-                messages = conn.execute("""select role,content,created_at from public.messages
-                    where conversation_id=%s and role in ('user','assistant')
-                    and content is not null and content<>''
-                    order by sequence_number""", (row["conversation_id"],)).fetchall()
             audits = conn.execute("""select event_type,actor_id,detail,created_at
                 from public.audit_events where resource_type='support_request'
                 and resource_id=%s order by created_at""", (str(request_id),)).fetchall()
         result = self._workflow_request(row)
-        result["conversation"] = [self._workflow_request(message) for message in messages]
         result["audit_history"] = [self._workflow_request(event) for event in audits]
         return result
 
@@ -1560,8 +1553,7 @@ class InMemoryRepository:
         result.update({"request_id": row["id"], "customer_request": row["summary"],
                        "proposed_response": row.get("draft_content"),
                        "audit_history": [copy.deepcopy(event) for event in self.audit_events
-                                         if event["resource_id"] == str(request_id)],
-                       "conversation": []})
+                                         if event["resource_id"] == str(request_id)]})
         return result
 
     def list_admin_reviewers(self):

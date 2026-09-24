@@ -59,6 +59,12 @@ def test_admin_can_open_monitoring_and_evaluations():
             assert client.get("/evals").status_code == 200
             assert client.get("/admin/approvals").status_code == 200
             assert client.get("/admin/hitl-evals").status_code == 200
+            chat = client.get("/", follow_redirects=False)
+            assert chat.status_code == 303
+            assert chat.headers["location"] == "/admin/approvals"
+            assert client.get("/state").status_code == 403
+            assert client.get("/requests").status_code == 403
+            assert client.post("/reset", json={}).status_code == 403
     finally:
         object.__setattr__(settings, "expose_internal_ui", original)
 

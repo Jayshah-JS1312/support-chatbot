@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from support_chatbot.api.dependencies import (
-    require_user,
+    require_customer,
     runtime,
     session,
     set_session_cookie,
@@ -29,6 +29,8 @@ def chat_page(request: Request):
     user = getattr(request.state, "user", None)
     if not user:
         return RedirectResponse("/login", status_code=303)
+    if user.role != "customer":
+        return RedirectResponse("/admin/approvals", status_code=303)
     context = runtime(request).get_session(request.cookies.get("sid"), user.user_id)
     response = HTMLResponse(CHAT_PAGE)
     set_session_cookie(response, context)
@@ -170,7 +172,7 @@ def request_status(request_id: str, request: Request, context=Depends(session)):
 
 
 @router.post("/actions/preview")
-def preview_action(payload: ActionPreviewRequest, request: Request, _=Depends(require_user)):
+def preview_action(payload: ActionPreviewRequest, request: Request, _=Depends(require_customer)):
     arguments = {"order_id": payload.order_id}
     if payload.reason is not None:
         arguments["reason"] = payload.reason
@@ -185,7 +187,7 @@ def confirm_action(
     proposal_id: str,
     payload: ActionConfirmationRequest,
     request: Request,
-    _=Depends(require_user),
+    _=Depends(require_customer),
 ):
     try:
         row, created = runtime(request).repository.confirm_action_proposal(
