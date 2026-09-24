@@ -70,6 +70,17 @@ def test_customer_page_mints_securely_scoped_session_cookie(api_client):
         assert label in response.text
 
 
+def test_chat_polling_preserves_reader_scroll_and_terminal_cards_are_compact(api_client):
+    client, _ = api_client
+    page = client.get("/").text
+
+    assert "function followsLatest()" in page
+    assert "const follow=followsLatest();" in page
+    assert "bubble.append(body);if(follow)scrollToLatest(true);" in page
+    assert ".workflow-card.terminal .workflow-steps" in page
+    assert "bubble.append(body);$('chat').scrollTop=$('chat').scrollHeight" not in page
+
+
 def test_state_preserves_session_across_requests(api_client):
     client, runtime = api_client
     client.get("/")

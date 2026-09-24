@@ -134,6 +134,10 @@
     .workflow-foot { display:flex; justify-content:space-between; gap:10px; align-items:center; margin-top:12px;
       color:var(--muted); font-size:10px; }
     .workflow-result { margin-top:12px; padding-top:12px; border-top:1px solid var(--line); color:var(--text); }
+    .workflow-card.terminal .workflow-steps,.workflow-card.terminal .workflow-foot { display:none; }
+    .workflow-card.terminal.has-result .workflow-detail { display:none; }
+    .workflow-card.terminal .workflow-body { padding-top:10px; }
+    .workflow-card.terminal .workflow-result { margin:0; padding:0; border:0; }
     .retry-status { color:var(--danger); }
     .retry-button { min-height:30px; padding:4px 9px; color:var(--text); background:var(--surface-3);
       border:1px solid var(--line-strong); border-radius:8px; }
@@ -282,7 +286,9 @@ const activePolls=new Set(),requestData=new Map(),requestBubbles=new Map();
 if(!INTERNAL_ENABLED)document.body.classList.add('internal-disabled');
 function render(text){const safe=String(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');return safe.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')}
 function hideWelcome(){const welcome=$('welcome');if(welcome)welcome.remove()}
-function addMessage(role,text,pending=false){hideWelcome();const item=document.createElement('article');item.className='message '+role;item.innerHTML='<div class="message-avatar"></div><div class="message-body"><div class="message-meta"></div><div class="bubble"></div></div>';item.querySelector('.message-avatar').textContent=role==='customer'?'YOU':'A';item.querySelector('.message-meta').textContent=role==='customer'?'You':'Ami';const bubble=item.querySelector('.bubble');if(pending){bubble.className+=' typing';bubble.setAttribute('aria-label','Ami is thinking');bubble.innerHTML='<i></i><i></i><i></i>'}else bubble.innerHTML=render(text);$('chat').append(item);$('chat').scrollTop=$('chat').scrollHeight;return item}
+function followsLatest(){const chat=$('chat');return chat.scrollHeight-chat.scrollTop-chat.clientHeight<80}
+function scrollToLatest(force=false){const chat=$('chat');if(force||followsLatest())chat.scrollTop=chat.scrollHeight}
+function addMessage(role,text,pending=false,forceScroll=false){hideWelcome();const follow=forceScroll||followsLatest();const item=document.createElement('article');item.className='message '+role;item.innerHTML='<div class="message-avatar"></div><div class="message-body"><div class="message-meta"></div><div class="bubble"></div></div>';item.querySelector('.message-avatar').textContent=role==='customer'?'YOU':'A';item.querySelector('.message-meta').textContent=role==='customer'?'You':'Ami';const bubble=item.querySelector('.bubble');if(pending){bubble.className+=' typing';bubble.setAttribute('aria-label','Ami is thinking');bubble.innerHTML='<i></i><i></i><i></i>'}else bubble.innerHTML=render(text);$('chat').append(item);if(follow)scrollToLatest(true);return item}
 function drawActivity(data){const container=$('activity');container.innerHTML='';for(const action of data.actions||[]){const escalated=action.startsWith('Escalated'),item=document.createElement('div');item.className='activity-item'+(escalated?' escalated':'');item.innerHTML='<div class="activity-icon">'+(escalated?'↗':'✓')+'</div><div><strong></strong><span></span></div>';item.querySelector('strong').textContent=escalated?'Conversation handed to a human':'Account action completed';item.querySelector('span').textContent=escalated?`Ticket ${data.escalation||'created'} · Expect an email within 24 hours.`:action;container.append(item)}}
 function draw(data){drawActivity(data);if(!INTERNAL_ENABLED)return;$('nmsg').textContent=data.messages??0;$('nord').textContent=data.orders??0;$('tkt').textContent=data.escalation||'—';$('wm').textContent=data.working||'(empty)';$('ltm').textContent=data.longterm||'First conversation with this customer.';const steps=$('steps');steps.innerHTML='';if(!data.steps?.length){steps.className='empty';steps.textContent='No tools called this turn.';return}steps.className='';for(const step of data.steps){const item=document.createElement('div');item.className='step';item.innerHTML='<div class="step-label"></div><pre></pre>';item.querySelector('.step-label').textContent=`Step ${step.n} · ${step.tool}`;item.querySelector('pre').textContent=`${JSON.stringify(step.args)}\n${JSON.stringify(step.observation)}`;steps.append(item)}}
 function normalizedState(state){return state==='QUEUED'?'DRAFTING':state}
@@ -290,8 +296,11 @@ function stageRank(state){state=normalizedState(state);if(['REJECTED','EXPIRED']
 function actionCopy(data){if(!data.action?.required)return'Response workflow · no account action';if(data.action.complete)return'Account action complete';if(['REJECTED','EXPIRED','COMPLETED_WITHOUT_ACTION'].includes(data.state))return'Account action not performed';return'Account action pending'}
 function workflowBubble(data){const item=addMessage('ami','');const bubble=item.querySelector('.bubble');bubble.classList.add('workflow-card');bubble.dataset.requestId=data.request_id;requestBubbles.set(data.request_id,bubble);return bubble}
 function renderWorkflow(bubble,data,connection='online'){
+  const follow=followsLatest();
   requestData.set(data.request_id,data);bubble.classList.remove('typing');bubble.removeAttribute('aria-label');bubble.textContent='';
   const state=normalizedState(data.state),copy=STATE_COPY[state]||[state.replaceAll('_',' '),'Status updated.'];
+  const terminal=TERMINAL.has(state),hasResult=terminal&&Boolean(data.reply);
+  bubble.classList.toggle('terminal',terminal);bubble.classList.toggle('has-result',hasResult);
   const head=document.createElement('div');head.className='workflow-head';
   const identity=document.createElement('div');identity.innerHTML='<div class="workflow-id"></div><div class="workflow-state"></div>';
   identity.querySelector('.workflow-id').textContent=`Ticket ${data.reference} · ${data.request_id}`;
@@ -306,8 +315,8 @@ function renderWorkflow(bubble,data,connection='online'){
   if(connection==='offline'){const retry=document.createElement('button');retry.type='button';retry.className='retry-button';retry.textContent='Retry status';retry.onclick=()=>refreshRequest(data.request_id,true);foot.append(retry)}
   else if(data.retrying){const retrying=document.createElement('span');retrying.className='retry-status';retrying.textContent='Delivery retry pending';foot.append(retrying)}
   body.append(foot);
-  if(TERMINAL.has(state)&&data.reply){const result=document.createElement('div');result.className='workflow-result';result.innerHTML=render(data.reply);body.append(result);if(state==='COMPLETED')lastAgentResponse=data.reply}
-  bubble.append(body);$('chat').scrollTop=$('chat').scrollHeight;
+  if(hasResult){const result=document.createElement('div');result.className='workflow-result';result.innerHTML=render(data.reply);body.append(result);if(state==='COMPLETED')lastAgentResponse=data.reply}
+  bubble.append(body);if(follow)scrollToLatest(true);
 }
 async function refreshRequest(id,manual=false){
   const bubble=requestBubbles.get(id),previous=requestData.get(id);if(!bubble||!previous)return'offline';
@@ -320,7 +329,7 @@ async function pollRequest(id,bubble){
   try{while(!TERMINAL.has(normalizedState(requestData.get(id)?.state))){await new Promise(resolve=>setTimeout(resolve,failures?Math.min(10000,2000*2**failures):2000));const result=await refreshRequest(id);if(result==='done')break;failures=result==='offline'?(navigator.onLine?Math.min(failures+1,3):3):0}}
   finally{activePolls.delete(id)}
 }
-async function sendMessage(text){text=text.trim();if(!text||sending)return;sending=true;$('sendButton').disabled=true;addMessage('customer',text);const pending=addMessage('ami','',true);try{const response=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:JSON.stringify({message:text,planner:$('planner').value})});if(!response.ok)throw new Error();const data=await response.json(),bubble=pending.querySelector('.bubble');bubble.classList.add('workflow-card');bubble.dataset.requestId=data.request_id;requestBubbles.set(data.request_id,bubble);renderWorkflow(bubble,data);pollRequest(data.request_id,bubble)}catch(error){const bubble=pending.querySelector('.bubble');bubble.classList.remove('typing');bubble.classList.add('workflow-card');bubble.textContent='The request could not be submitted. Check your connection and try sending it again.'}finally{sending=false;$('sendButton').disabled=false;$('messageInput').focus()}}
+async function sendMessage(text){text=text.trim();if(!text||sending)return;sending=true;$('sendButton').disabled=true;addMessage('customer',text,false,true);const pending=addMessage('ami','',true,true);try{const response=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:JSON.stringify({message:text,planner:$('planner').value})});if(!response.ok)throw new Error();const data=await response.json(),bubble=pending.querySelector('.bubble');bubble.classList.add('workflow-card');bubble.dataset.requestId=data.request_id;requestBubbles.set(data.request_id,bubble);renderWorkflow(bubble,data);pollRequest(data.request_id,bubble)}catch(error){const bubble=pending.querySelector('.bubble');bubble.classList.remove('typing');bubble.classList.add('workflow-card');bubble.textContent='The request could not be submitted. Check your connection and try sending it again.'}finally{sending=false;$('sendButton').disabled=false;$('messageInput').focus()}}
 $('composer').addEventListener('submit',event=>{event.preventDefault();const text=$('messageInput').value;$('messageInput').value='';$('messageInput').style.height='auto';sendMessage(text)});
 $('messageInput').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();$('composer').requestSubmit()}});
 $('messageInput').addEventListener('input',event=>{event.target.style.height='auto';event.target.style.height=Math.min(event.target.scrollHeight,140)+'px'});
