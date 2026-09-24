@@ -8,7 +8,9 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from support_chatbot import dashboard, observe
 from support_chatbot.operational import public_events, sanitized_logfile
 from support_chatbot.api.dependencies import require_admin, require_internal_ui, runtime
-from support_chatbot.api.models import ApprovalDecisionRequest, ApprovalReassignRequest
+from support_chatbot.api.models import (
+    ApprovalDecisionRequest, ApprovalReassignRequest, TicketUpdateRequest,
+)
 from support_chatbot.llm import MODEL
 from support_chatbot.persistence import ActionProposalError, InvalidWorkflowTransition
 
@@ -29,6 +31,31 @@ def monitoring_page(_=Depends(require_internal_ui)):
 @router.get("/admin/approvals", response_class=HTMLResponse)
 def approvals_page():
     return HTMLResponse(dashboard.APPROVAL_PAGE)
+
+
+@router.get("/admin/tickets", response_class=HTMLResponse)
+def tickets_page():
+    return HTMLResponse(dashboard.ADMIN_TICKETS_PAGE)
+
+
+@router.get("/admin/tickets.json")
+def tickets_data(request: Request, status: str = "open"):
+    if status not in {"open", "in_progress", "resolved", "closed", "all"}:
+        raise HTTPException(status_code=422, detail="Unknown ticket filter")
+    return {"items": runtime(request).repository.list_tickets(status), "filter": status}
+
+
+@router.patch("/admin/tickets/{ticket_id}")
+def update_ticket(
+    ticket_id: str, payload: TicketUpdateRequest, request: Request,
+    admin=Depends(require_admin),
+):
+    row = runtime(request).repository.update_ticket(
+        ticket_id, payload.status, payload.resolution.strip(), admin.user_id,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Support ticket not found")
+    return row
 
 
 @router.get("/admin/approvals.json")

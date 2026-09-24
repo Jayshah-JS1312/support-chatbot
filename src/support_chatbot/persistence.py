@@ -303,19 +303,68 @@ class PostgresRepository:
                 (uuid.uuid4().hex, row["user_id"], request["id"], row["id"], Jsonb({"reason": reason, "expected_version": expected_version}), Jsonb({"rma": reference, "version": row["version"]})))
             return reference
 
-    def create_escalation(self, summary):
+    def create_escalation(self, summary, conversation_id=None, source_request_id=None):
         identity = current_identity()
-        idempotency_key = f"escalation:{uuid.uuid4().hex}"
-        payload_hash = hashlib.sha256(summary.encode()).hexdigest()
         with self.connection() as conn:
             ref = conn.execute("select 'ESC-' || nextval('public.support_reference_seq') as reference").fetchone()["reference"]
-            conn.execute("""insert into public.support_requests
-                (reference_number,user_id,request_type,summary,status,idempotency_key,
-                 payload_hash,completed_at,metadata)
-                values(%s,%s,'escalation',%s,'COMPLETED',%s,%s,now(),
-                       '{"source":"agent_handoff"}'::jsonb)""",
-                (ref, identity.user_id, summary, idempotency_key, payload_hash))
+            conversation = conn.execute(
+                "select id from public.conversations where browser_session_id=%s",
+                (conversation_id,),
+            ).fetchone() if conversation_id else None
+            ticket = conn.execute(
+                """insert into public.support_tickets
+                (reference_number,user_id,conversation_id,source_request_id,summary,status)
+                values(%s,%s,%s,%s,%s,'open') returning id""",
+                (ref, identity.user_id, conversation["id"] if conversation else None,
+                 source_request_id, summary),
+            ).fetchone()
+            conn.execute(
+                """insert into public.audit_events
+                (user_id,actor_type,actor_id,event_type,resource_type,resource_id,request_id,detail)
+                values(%s,'agent','ami','support_ticket_created','support_ticket',%s,%s,%s)""",
+                (identity.user_id, str(ticket["id"]), str(source_request_id) if source_request_id else None,
+                 Jsonb({"reference_number": ref, "status": "open"})),
+            )
         return ref
+
+    def list_tickets(self, status="all", limit=100):
+        identity = current_identity()
+        with self.connection() as conn:
+            rows = conn.execute(
+                """select t.*,p.email as customer_email,p.display_name as customer_name,
+                reviewer.display_name as assignee_name,c.browser_session_id
+                from public.support_tickets t join public.profiles p on p.id=t.user_id
+                left join public.profiles reviewer on reviewer.id=t.assigned_to
+                left join public.conversations c on c.id=t.conversation_id
+                where (%s='all' or t.status=%s)
+                  and (%s='admin' or t.user_id=%s)
+                order by case when t.status in ('open','in_progress') then 0 else 1 end,
+                         t.created_at desc limit %s""",
+                (status, status, identity.role, identity.user_id, limit),
+            ).fetchall()
+        return [self._workflow_request(row) for row in rows]
+
+    def update_ticket(self, ticket_id, status, resolution, admin_user_id):
+        if status not in {"in_progress", "resolved", "closed"}:
+            raise InvalidWorkflowTransition(status)
+        with self.connection() as conn:
+            row = conn.execute(
+                """update public.support_tickets set status=%s,resolution=%s,
+                assigned_to=%s,updated_at=now(),
+                resolved_at=case when %s in ('resolved','closed') then now() else null end
+                where id=%s returning *""",
+                (status, resolution or None, admin_user_id, status, ticket_id),
+            ).fetchone()
+            if not row:
+                return None
+            conn.execute(
+                """insert into public.audit_events
+                (user_id,actor_type,actor_id,event_type,resource_type,resource_id,detail)
+                values(%s,'admin',%s,'support_ticket_updated','support_ticket',%s,%s)""",
+                (row["user_id"], admin_user_id, str(ticket_id),
+                 Jsonb({"status": status, "resolution": resolution or None})),
+            )
+        return self._workflow_request(row)
 
     def create_support_request(self, summary, planner, idempotency_key, session_id=None):
         identity = current_identity()
@@ -1277,8 +1326,9 @@ class PostgresRepository:
             summary["sessions"].append(row["browser_session_id"])
             for key, values in (
                 ("orders_discussed", list(work.get("orders", {}))),
-                ("actions", work.get("actions", [])),
-                ("escalations", [work["escalation"]] if work.get("escalation") else []),
+                ("actions", [action for action in work.get("actions", [])
+                             if not action.startswith("Escalated to a human")]),
+                ("escalations", []),
             ):
                 summary[key].extend(value for value in values if value not in summary[key])
             summary["refusals"] = max(summary["refusals"], len(work.get("failures", [])))
@@ -1388,7 +1438,7 @@ class PostgresRepository:
             current = conn.execute("select summary from public.memory_summaries where user_id=%s", (profile["id"],)).fetchone()
             summary = dict(current["summary"]) if current else {"first_seen": date.today().isoformat(), "sessions": [], "orders_discussed": [], "actions": [], "escalations": [], "refusals": 0}
             summary["last_seen"] = date.today().isoformat()
-            for key, values in (("sessions", [session_id]), ("orders_discussed", list(work.get("orders", {}))), ("actions", work.get("actions", [])), ("escalations", [work["escalation"]] if work.get("escalation") else [])):
+            for key, values in (("sessions", [session_id]), ("orders_discussed", list(work.get("orders", {}))), ("actions", [action for action in work.get("actions", []) if not action.startswith("Escalated to a human")]), ("escalations", [])):
                 summary.setdefault(key, [])
                 summary[key].extend(value for value in values if value not in summary[key])
             summary["refusals"] = max(summary.get("refusals", 0), len(work.get("failures", [])))
@@ -1439,6 +1489,7 @@ class InMemoryRepository:
         self.action_proposals = {}
         self.audit_events = []
         self.hitl_evaluation_runs = []
+        self.support_tickets = {}
 
     def healthcheck(self): return True
     def _visible(self, owner):
@@ -1505,7 +1556,35 @@ class InMemoryRepository:
         self.returns[reference] = {"order_id": order_id, "reason": reason}
         order["status"], order["version"] = "return started", order["version"] + 1
         return reference
-    def create_escalation(self, summary): return f"ESC-{4417 + len(self.feedback)}"
+    def create_escalation(self, summary, conversation_id=None, source_request_id=None):
+        identity = current_identity(); reference = f"ESC-{4417 + len(self.support_tickets)}"
+        ticket_id = str(uuid.uuid4()); now = datetime.now(timezone.utc).isoformat()
+        self.support_tickets[ticket_id] = {
+            "id": ticket_id, "reference_number": reference,
+            "user_id": identity.user_id if identity else None,
+            "conversation_id": conversation_id, "browser_session_id": conversation_id,
+            "source_request_id": source_request_id, "summary": summary, "status": "open",
+            "resolution": None, "assigned_to": None, "assignee_name": None,
+            "customer_email": identity.email if identity else None,
+            "customer_name": identity.display_name if identity else None,
+            "created_at": now, "updated_at": now, "resolved_at": None,
+        }
+        return reference
+    def list_tickets(self, status="all", limit=100):
+        identity = current_identity(); rows = []
+        for row in reversed(list(self.support_tickets.values())):
+            if identity and (identity.role == "admin" or row["user_id"] == identity.user_id):
+                if status == "all" or row["status"] == status: rows.append(copy.deepcopy(row))
+            if len(rows) >= limit: break
+        return rows
+    def update_ticket(self, ticket_id, status, resolution, admin_user_id):
+        row = self.support_tickets.get(str(ticket_id))
+        if not row: return None
+        if status not in {"in_progress", "resolved", "closed"}: raise InvalidWorkflowTransition(status)
+        row.update({"status": status, "resolution": resolution or None,
+                    "assigned_to": admin_user_id, "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "resolved_at": datetime.now(timezone.utc).isoformat() if status in {"resolved", "closed"} else None})
+        return copy.deepcopy(row)
     def create_support_request(self, summary, planner, idempotency_key, session_id=None):
         identity = current_identity()
         payload_hash = hashlib.sha256(f"{planner}\0{summary}".encode()).hexdigest()
@@ -2035,7 +2114,7 @@ class InMemoryRepository:
         if not email: return
         rec = self.memories.setdefault(email.lower(), {"first_seen": date.today().isoformat(), "sessions": [], "orders_discussed": [], "actions": [], "escalations": [], "refusals": 0})
         rec["last_seen"] = date.today().isoformat()
-        for key, values in (("sessions", [session_id]), ("orders_discussed", list(work.get("orders", {}))), ("actions", work.get("actions", [])), ("escalations", [work["escalation"]] if work.get("escalation") else [])):
+        for key, values in (("sessions", [session_id]), ("orders_discussed", list(work.get("orders", {}))), ("actions", [action for action in work.get("actions", []) if not action.startswith("Escalated to a human")]), ("escalations", [])):
             rec[key].extend(value for value in values if value not in rec[key])
         rec["refusals"] = max(rec["refusals"], len(work.get("failures", [])))
     def recall(self, email):

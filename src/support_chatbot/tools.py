@@ -128,11 +128,11 @@ def search_knowledge(question):
                          for h in hits]}
 
 
-def escalate(summary):
+def escalate(summary, _conversation_id=None, _source_request_id=None):
     """Hand off to a human. The honest answer when no other tool fits."""
     return {
         "escalated": True,
-        "ticket": store.create_escalation(summary),
+        "ticket": store.create_escalation(summary, _conversation_id, _source_request_id),
         "message": "A human agent will email you within 24 hours.",
         "summary": summary,
     }

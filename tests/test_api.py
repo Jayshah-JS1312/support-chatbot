@@ -7,6 +7,7 @@ from support_chatbot.api.app import create_app
 from support_chatbot.api.runtime import RuntimeState
 from support_chatbot.persistence import get_repository
 from support_chatbot.workflow import WorkflowCoordinator
+from support_chatbot.auth import Identity, reset_identity, set_identity
 
 
 class RecordingDispatcher:
@@ -307,6 +308,62 @@ def test_customer_logout_does_not_inherit_admin_cookie(api_client):
     assert client.get("/admin/approvals").status_code == 200
 
 
+def test_admin_cookie_never_authenticates_customer_routes(api_client):
+    client, _ = api_client
+    client.post(
+        "/auth/login?role=admin",
+        json={"email": "admin@example.com", "password": "AdminDemo!2026"},
+    )
+    client.post("/auth/logout?role=customer")
+
+    response = client.get("/", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_support_ticket_has_customer_and_admin_views(api_client):
+    client, runtime = api_client
+    token = set_identity(Identity(
+        "11111111-1111-4111-8111-111111111111",
+        "raj@example.com", "Raj", "customer",
+    ))
+    try:
+        reference = runtime.repository.create_escalation("Customer requested a person")
+    finally:
+        reset_identity(token)
+
+    customer = client.get("/tickets.json")
+    assert customer.status_code == 200
+    ticket = customer.json()["items"][0]
+    assert ticket["reference_number"] == reference
+    assert ticket["status"] == "open"
+
+    client.post(
+        "/auth/login?role=admin",
+        json={"email": "admin@example.com", "password": "AdminDemo!2026"},
+    )
+    admin = client.get("/admin/tickets.json?status=open")
+    assert admin.status_code == 200
+    assert admin.json()["items"][0]["reference_number"] == reference
+    resolved = client.patch(
+        f"/admin/tickets/{ticket['id']}",
+        json={"status": "resolved", "resolution": "We contacted the customer."},
+    )
+    assert resolved.status_code == 200
+    assert resolved.json()["status"] == "resolved"
+
+    customer_after = client.get("/tickets.json?role=customer")
+    assert customer_after.status_code == 200
+    assert customer_after.json()["items"][0]["resolution"] == "We contacted the customer."
+
+    client.post("/auth/logout?role=customer")
+    client.post(
+        "/auth/login?role=customer",
+        json={"email": "mei@example.com", "password": "MeiDemo!2026"},
+    )
+    assert client.get("/tickets.json").json()["items"] == []
+
+
 def test_customer_page_has_identity_quick_actions_history_and_ticket_notifications(api_client):
     client, _ = api_client
     page = client.get("/").text
@@ -319,6 +376,7 @@ def test_customer_page_has_identity_quick_actions_history_and_ticket_notificatio
     assert "renderConversation" in page
     assert "renameConversation" in page
     assert "deleteConversation" in page
+    assert "Support tickets" in page
 
 
 def test_empty_conversations_are_not_listed(api_client):

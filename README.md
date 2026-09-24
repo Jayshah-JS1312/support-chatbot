@@ -90,6 +90,8 @@ enabled, the monitoring console is at <http://127.0.0.1:8000/monitoring>.
 The retrieval evaluation dashboard is at <http://127.0.0.1:8000/evals>.
 The HITL safety dashboard is at <http://127.0.0.1:8000/admin/hitl-evals>.
 The admin approval inbox is at <http://127.0.0.1:8000/admin/approvals>.
+Customers can track human-support tickets at <http://127.0.0.1:8000/tickets>,
+and administrators manage them at <http://127.0.0.1:8000/admin/tickets>.
 Monitoring and trace routes require operator authentication, and payloads are
 redacted server-side before they reach the browser or trace download.
 

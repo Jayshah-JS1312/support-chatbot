@@ -26,8 +26,8 @@ def start_return(order_id, reason, expected_version):
     return get_repository().start_return(order_id, reason, expected_version)
 
 
-def create_escalation(summary):
-    return get_repository().create_escalation(summary)
+def create_escalation(summary, conversation_id=None, source_request_id=None):
+    return get_repository().create_escalation(summary, conversation_id, source_request_id)
 
 
 class _OrdersView(Mapping):

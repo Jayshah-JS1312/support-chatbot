@@ -26,6 +26,8 @@ below are addressed.
 - Request-size limit and non-disclosing HTTP errors
 - `HttpOnly`/`SameSite` session cookies, with opt-in `Secure`
 - Opaque, hashed, expiring, and revocable database-backed sessions
+- Distinct customer/admin cookies with strict route realms and no cross-role
+  authentication fallback
 - Customer/admin role separation with server-controlled role assignment
 - PostgreSQL row-level security and application-level ownership checks
 - One-use, expiring password-reset tokens that revoke existing sessions

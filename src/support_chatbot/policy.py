@@ -95,6 +95,11 @@ def guarded_run(name, args, work):
     args = dict(args)
     confirmed = bool(args.pop("confirmed", False))
 
+    if name == "escalate":
+        # Server-owned workflow context is never accepted from model output.
+        args["_conversation_id"] = getattr(work, "session_id", None)
+        args["_source_request_id"] = getattr(work, "request_id", None)
+
     # Rule: one escalation per conversation. The tool cannot know this —
     # only working memory does.
     if name == "escalate" and work.escalation:
@@ -143,6 +148,8 @@ def check_output(reply, work, user_text="", context=""):
             return ident
         observe.log("policy", stage="output", rule="unverified_identifier",
                     ident=ident)
-        return "[unverified]"
+        # This is a customer-facing safety boundary, not a debugging surface.
+        # Remove the invented identifier without exposing an internal marker.
+        return "a full 17-digit Amazon order number"
 
     return _IDENT.sub(verify, reply)

@@ -90,7 +90,7 @@ def test_approved_action_executes_once(action_app):
     assert approved.status_code == 200
     assert dispatcher.calls[-1] == (request_id, "execute")
     assert repository.orders["112-3333333-3333333"]["status"] == "preparing"
-    assert client.get(f"/requests/{request_id}").status_code == 403
+    assert client.get(f"/requests/{request_id}").status_code == 401
     pending = repository.support_requests[request_id]
     assert pending["status"] == "APPROVED"
 

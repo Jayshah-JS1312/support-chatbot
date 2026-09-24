@@ -18,6 +18,7 @@ from support_chatbot.api.models import (
     ResetRequest,
 )
 from support_chatbot.api.runtime import CHAT_PAGE
+from support_chatbot import UI_DIR
 from support_chatbot.config import settings
 from support_chatbot.persistence import (
     ActionProposalError,
@@ -27,6 +28,7 @@ from support_chatbot.persistence import (
 
 
 router = APIRouter(tags=["customer"])
+CUSTOMER_TICKETS_PAGE = (UI_DIR / "customer_tickets.html").read_text()
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -60,6 +62,16 @@ def current_state(request: Request, context=Depends(session)):
 @router.get("/conversations")
 def conversations(request: Request, _=Depends(require_customer)):
     return {"items": runtime(request).repository.list_conversations()}
+
+
+@router.get("/tickets", response_class=HTMLResponse)
+def customer_tickets_page(_=Depends(require_customer)):
+    return HTMLResponse(CUSTOMER_TICKETS_PAGE)
+
+
+@router.get("/tickets.json")
+def customer_tickets_data(request: Request, _=Depends(require_customer)):
+    return {"items": runtime(request).repository.list_tickets("all")}
 
 
 @router.patch("/conversations/{conversation_id}")

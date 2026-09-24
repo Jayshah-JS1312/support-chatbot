@@ -96,6 +96,22 @@ the request reaches `COMPLETED`; approval alone never appears as a successful
 account action. The latest owned conversation is restored when the browser
 session cookie is missing.
 
+Three identifiers intentionally describe different durable objects:
+
+- `REQ-*` is an internal asynchronous processing request. It records drafting,
+  approval, execution, failure, and recovery state; it is not automatically a
+  customer support ticket.
+- `ESC-*` is a human-support ticket created only when Ami actually calls the
+  escalation tool. Customers track their owned tickets at `/tickets`, while
+  operators work the same records at `/admin/tickets`.
+- An approval task is a separate safety gate for a proposed privileged action.
+  It appears in `/admin/approvals` and must never be synthesized from a failed
+  request or a general request for human assistance.
+
+Support ticket references are scoped to the conversation that created them and
+are not copied into long-term customer memory. This prevents a later issue from
+silently reusing an old escalation.
+
 ## Authentication and authorization
 
 Passwords are bcrypt-hashed. The browser receives an opaque `HttpOnly`,
@@ -103,6 +119,15 @@ Passwords are bcrypt-hashed. The browser receives an opaque `HttpOnly`,
 the session, logout revokes it, and a successful password reset revokes every
 active session for that user. Signup has no role input and always creates a
 `customer`.
+
+Customer and administrator logins use distinct cookie names and strict route
+realms. Customer routes never fall back to an administrator cookie, and admin
+routes never authorize a customer cookie. This permits a customer and an admin
+to be open in separate tabs without one identity replacing the other. The
+opaque token is deliberate: changing its serialization to JWT would not fix
+cookie selection or tab isolation, while database-backed sessions provide
+immediate logout, rotation, and revocation without exposing credentials to
+browser JavaScript.
 
 The application switches each business transaction to the restricted
 `app_backend` PostgreSQL role and sets the verified user/role as transaction-

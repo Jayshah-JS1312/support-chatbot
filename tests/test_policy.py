@@ -225,7 +225,7 @@ class TestCheckOutputVerification:
         reply = "Your order 112-1111111-1111111 is ready."
         checked = policy.check_output(reply, work)
         assert "112-1111111-1111111" in checked
-        assert "[unverified]" not in checked
+        assert "a full 17-digit Amazon order number" not in checked
 
     def test_unknown_order_number_redacted(self):
         work = WorkingMemory()
@@ -233,7 +233,15 @@ class TestCheckOutputVerification:
         reply = "Your order 999-9999999-9999999 has shipped."
         checked = policy.check_output(reply, work)
         assert "999-9999999-9999999" not in checked
-        assert "[unverified]" in checked
+        assert "a full 17-digit Amazon order number" in checked
+        assert "[unverified]" not in checked
+
+    def test_invented_format_example_becomes_customer_friendly_copy(self):
+        work = WorkingMemory()
+        reply = "Please send the full order number (it looks like `112-1234567-1234567`)."
+        checked = policy.check_output(reply, work)
+        assert "112-1234567-1234567" not in checked
+        assert "it looks like `a full 17-digit Amazon order number`" in checked
 
     def test_escalation_ticket_passes(self):
         work = WorkingMemory()
@@ -255,7 +263,7 @@ class TestCheckOutputVerification:
         reply = "Your RMA number is RMA-9999."
         checked = policy.check_output(reply, work)
         assert "RMA-9999" not in checked
-        assert "[unverified]" in checked
+        assert "a full 17-digit Amazon order number" in checked
 
     def test_customer_input_provides_context(self):
         """Identifiers the customer said are trusted."""
@@ -290,7 +298,7 @@ class TestCheckOutputMultipleIdentifiers:
         assert "o1" in checked
         assert "ESC-1" in checked
         assert "RMA-999" not in checked
-        assert "[unverified]" in checked
+        assert "a full 17-digit Amazon order number" in checked
 
     def test_all_identifiers_unverified_all_redacted(self):
         work = WorkingMemory()
@@ -299,7 +307,7 @@ class TestCheckOutputMultipleIdentifiers:
         reply = "Order 112-1111111-1111111, RMA-1001, ESC-500."
         checked = policy.check_output(reply, work)
         # All should be redacted
-        assert checked.count("[unverified]") >= 3
+        assert checked.count("a full 17-digit Amazon order number") >= 3
 
 
 class TestConfirmToolsConstant:

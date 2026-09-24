@@ -63,10 +63,10 @@ def test_admin_can_open_monitoring_and_evaluations():
                 assert 'href="/">Back to chat' not in page.text
             chat = client.get("/", follow_redirects=False)
             assert chat.status_code == 303
-            assert chat.headers["location"] == "/admin/approvals"
-            assert client.get("/state").status_code == 403
-            assert client.get("/requests").status_code == 403
-            assert client.post("/reset", json={}).status_code == 403
+            assert chat.headers["location"] == "/login"
+            assert client.get("/state").status_code == 401
+            assert client.get("/requests").status_code == 401
+            assert client.post("/reset", json={}).status_code == 401
     finally:
         object.__setattr__(settings, "expose_internal_ui", original)
 

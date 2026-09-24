@@ -182,6 +182,8 @@ class WorkflowCoordinator:
                 agent_profile.system_prompt(), {"history": persisted["history"]}
             )
             work = WorkingMemory.from_dict(persisted["work"])
+            work.session_id = context["session_id"]
+            work.request_id = request["id"]
             safe_text, note = policy.check_input(request["summary"])
             engine = plan_execute.plan_execute if context["planner"] == "plan" else planner.react
             steps = []

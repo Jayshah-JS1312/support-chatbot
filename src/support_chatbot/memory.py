@@ -269,11 +269,12 @@ class LongTermMemory:
             return None
         lines = [f"RETURNING CUSTOMER ({email}): {len(previous)} previous "
                  f"conversation(s), last on {rec['last_seen']}."]
-        if rec["actions"]:
-            lines.append("Previously done for them: " + "; ".join(rec["actions"][-3:]))
-        if rec["escalations"]:
-            lines.append("Previously escalated: " + ", ".join(rec["escalations"])
-                         + " — reference these rather than opening another.")
+        business_actions = [action for action in rec["actions"]
+                            if not action.startswith("Escalated to a human")]
+        if business_actions:
+            lines.append("Previously done for them: " + "; ".join(business_actions[-3:]))
+        # Handoffs are scoped to their support ticket/conversation. Reusing an
+        # old ESC reference for a new issue would hide work from the queue.
         if rec["refusals"]:
             lines.append(f"Has hit a policy refusal {rec['refusals']} time(s) before; "
                          f"be clear about rules up front.")

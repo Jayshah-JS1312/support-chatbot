@@ -79,6 +79,11 @@ class ApprovalReassignRequest(StrictRequest):
     reason: str = Field(default="", max_length=2_000)
 
 
+class TicketUpdateRequest(StrictRequest):
+    status: Literal["in_progress", "resolved", "closed"]
+    resolution: str = Field(default="", max_length=4_000)
+
+
 class ActionPreviewRequest(StrictRequest):
     action: Literal["cancel_order", "start_return"]
     order_id: str = Field(pattern=r"^\d{3}-\d{7}-\d{7}$")

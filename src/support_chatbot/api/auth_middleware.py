@@ -17,7 +17,9 @@ def auth_cookie_for_scope(scope):
     """Keep customer and operator identities isolated in the same browser."""
     path = scope.get("path", "")
     query = scope.get("query_string", b"").decode("latin-1")
-    admin_path = path.startswith(("/admin", "/monitoring", "/evals", "/metrics"))
+    admin_path = path.startswith((
+        "/admin", "/monitoring", "/evals", "/metrics", "/logs", "/trace",
+    ))
     admin_auth_action = (path.startswith("/auth/") or path == "/login") and "role=admin" in query
     return ADMIN_AUTH_COOKIE if admin_path or admin_auth_action else CUSTOMER_AUTH_COOKIE
 
@@ -34,18 +36,18 @@ class AuthenticationMiddleware:
         cookie = SimpleCookie()
         cookie.load(headers.get(b"cookie", b"").decode("latin-1"))
         cookie_name = auth_cookie_for_scope(scope)
-        fallback_name = (CUSTOMER_AUTH_COOKIE if cookie_name == ADMIN_AUTH_COOKIE
-                         else ADMIN_AUTH_COOKIE)
-        query = scope.get("query_string", b"").decode("latin-1")
-        explicit_role = (scope.get("path") == "/login" or
-                         scope.get("path", "").startswith("/auth/")) and (
-                             "role=customer" in query or "role=admin" in query
-                         )
         identity = None
-        # An explicit role is a browser-context boundary. In particular, a
-        # customer logout must not silently inherit an admin cookie that is
-        # valid in another tab.
-        for candidate in ((cookie_name,) if explicit_role else (cookie_name, fallback_name)):
+        path = scope.get("path", "")
+        protected_admin_path = path.startswith((
+            "/admin", "/monitoring", "/evals", "/metrics", "/logs", "/trace",
+        ))
+        # Customer routes never inherit an admin identity. On a protected
+        # admin route only, a customer cookie may be inspected after the admin
+        # cookie so authorization returns 403 rather than pretending the
+        # authenticated customer is anonymous.
+        candidates = ((ADMIN_AUTH_COOKIE, CUSTOMER_AUTH_COOKIE)
+                      if protected_admin_path else (cookie_name,))
+        for candidate in candidates:
             morsel = cookie.get(candidate)
             if not morsel:
                 continue

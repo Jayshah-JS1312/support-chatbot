@@ -27,6 +27,7 @@ def test_all_phase_two_tables_exist():
         "audit_events", "evaluation_runs", "evaluation_results",
         "auth_sessions", "password_reset_tokens",
         "workflow_dead_letters", "action_proposals",
+        "support_tickets",
     }
     try:
         with repository.pool.connection() as connection:
@@ -51,11 +52,43 @@ def test_customer_resources_require_owners_and_rls_is_enabled():
                 join pg_namespace on pg_namespace.oid=pg_class.relnamespace
                 where nspname='public' and relname in
                 ('profiles','orders','conversations','messages','support_requests',
-                 'auth_sessions','password_reset_tokens','action_proposals')""").fetchall()
+                 'auth_sessions','password_reset_tokens','action_proposals','support_tickets')""").fetchall()
         assert nullable == []
-        assert len(rls) == 8
+        assert len(rls) == 9
         assert all(row["relrowsecurity"] for row in rls)
     finally:
+        repository.close()
+
+
+def test_postgres_support_ticket_is_owned_visible_and_resolvable():
+    repository = PostgresRepository(os.environ.get("DATABASE_URL"))
+    ticket_id = None
+    identity, session_token = repository.login("raj@example.com", "RajDemo!2026")
+    token = set_identity(identity)
+    try:
+        reference = repository.create_escalation("Integration handoff")
+        ticket = next(t for t in repository.list_tickets() if t["reference_number"] == reference)
+        ticket_id = ticket["id"]
+        assert ticket["status"] == "open"
+    finally:
+        reset_identity(token)
+    admin_token = set_identity(Identity(
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "admin@example.com", "Ami Admin", "admin",
+    ))
+    try:
+        updated = repository.update_ticket(
+            ticket_id, "resolved", "Customer contacted",
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        )
+        assert updated["status"] == "resolved"
+        assert updated["resolution"] == "Customer contacted"
+    finally:
+        reset_identity(admin_token)
+        with repository.pool.connection() as connection:
+            connection.execute("delete from public.audit_events where resource_type='support_ticket' and resource_id=%s", (ticket_id,))
+            connection.execute("delete from public.support_tickets where id=%s", (ticket_id,))
+        repository.logout(session_token)
         repository.close()
 
 

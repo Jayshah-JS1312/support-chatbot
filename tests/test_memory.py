@@ -411,7 +411,7 @@ class TestLongTermMemory:
         assert "s1" in rec["sessions"]
         assert "o1" in rec["orders_discussed"]
         assert "Cancelled o1" in rec["actions"]
-        assert "ESC-123" in rec["escalations"]
+        assert rec["escalations"] == []
 
     def test_remember_increments_refusal_count(self, memory_repository):
         ltm = LongTermMemory(memory_repository)
@@ -460,16 +460,16 @@ class TestLongTermMemory:
         assert "Previously done" in recall
         assert "Cancelled" in recall
 
-    def test_recall_includes_previous_escalations(self, memory_repository):
-        """Previous escalations are included in the recall note."""
+    def test_recall_does_not_reuse_previous_escalations(self, memory_repository):
+        """A new issue must create a new ticket instead of reusing an old ESC."""
         ltm = LongTermMemory(memory_repository)
         work = WorkingMemory()
         work.customer_email = "frank@example.com"
         work.escalation = "ESC-789"
         ltm.remember(work, session_id="s1")
         recall = ltm.recall("frank@example.com", current_session="s2")
-        assert "escalated" in recall.lower()
-        assert "ESC-789" in recall
+        assert "ESC-789" not in recall
+        assert "escalated" not in recall.lower()
 
     def test_remember_without_email_does_nothing(self, memory_repository):
         """If customer email is unknown, nothing is recorded."""
