@@ -140,6 +140,7 @@ class TestGuardedRunConfirmation:
         # The pending confirmation is recorded
         assert work.pending is not None
         assert work.pending["key"] == ["cancel_order", "o1"]
+        assert work.pending["args"] == {"order_id": "o1"}
 
     def test_cancel_order_with_confirmation_runs_tool(self, fresh_store):
         """Second call creates a proposal but cannot execute the action."""
@@ -214,6 +215,45 @@ class TestGuardedRunConfirmation:
         result = policy.guarded_run("cancel_order", {"order_id": "o2"}, work)
         # Should be a new pending for o2
         assert work.pending["key"] == ["cancel_order", "o2"]
+
+    @pytest.mark.parametrize("text", [
+        "Yes", "Yes please", "Yes now", "Yes please do it", "Proceed",
+        "Go ahead", "Sure", "Absolutely", "I confirm",
+        "Yes please start a return request.", "Submit the cancellation proposal",
+    ])
+    def test_unambiguous_confirmation_is_recognized(self, text):
+        assert policy.confirmation_decision(text) is True
+
+    @pytest.mark.parametrize("text", [
+        "No", "No thanks", "Don't proceed", "Cancel that", "Never mind",
+    ])
+    def test_unambiguous_rejection_is_recognized(self, text):
+        assert policy.confirmation_decision(text) is False
+
+    @pytest.mark.parametrize("text", [
+        "Yes, but use another order", "Can you proceed?", "Maybe", "What will happen?",
+    ])
+    def test_ambiguous_or_changed_confirmation_is_not_authorized(self, text):
+        assert policy.confirmation_decision(text) is None
+
+    def test_model_cannot_confirm_when_server_marks_reply_ambiguous(self, fresh_store):
+        work = WorkingMemory()
+        work.turn = 1
+        policy.guarded_run(
+            "cancel_order", {"order_id": "112-3333333-3333333"}, work,
+        )
+        original = dict(work.pending)
+        work.turn = 2
+        work._confirmation_verified = False
+
+        result = policy.guarded_run(
+            "cancel_order",
+            {"order_id": "112-3333333-3333333", "confirmed": True},
+            work,
+        )
+
+        assert result["needs_confirmation"] is True
+        assert work.pending == original
 
 
 class TestCheckOutputVerification:

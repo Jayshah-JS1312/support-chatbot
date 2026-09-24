@@ -373,6 +373,19 @@ class TestWorkingMemoryConfirmation:
         # Should not have recorded any action or change
         assert len(w.actions) == 0
 
+    def test_pending_action_is_visible_in_reasoning_brief(self):
+        w = WorkingMemory()
+        w.pending = {
+            "key": ["start_return", "112-1111111-1111111"],
+            "turn": 1,
+            "args": {"order_id": "112-1111111-1111111", "reason": "defective"},
+        }
+
+        brief = w.brief()
+
+        assert "AWAITING CUSTOMER CONFIRMATION" in brief
+        assert "Do not preview it again" in brief
+
 
 class TestLongTermMemory:
     """LongTermMemory stores customer facts across conversations."""

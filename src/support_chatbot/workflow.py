@@ -28,6 +28,46 @@ SYSTEM_IDENTITY = Identity(
 )
 
 
+def _pending_arguments(conversation, pending):
+    """Recover arguments from new state or a pre-fix persisted tool request."""
+    arguments = dict((pending or {}).get("args") or {})
+    key = (pending or {}).get("key") or []
+    if len(key) != 2:
+        return None, {}
+    action, order_id = key
+    arguments.setdefault("order_id", order_id)
+    if action == "start_return" and not arguments.get("reason"):
+        for message in reversed(conversation.history):
+            for call in reversed(message.get("tool_calls") or []):
+                function = call.get("function") or {}
+                if function.get("name") != action:
+                    continue
+                try:
+                    candidate = json.loads(function.get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    continue
+                if candidate.get("order_id") == order_id and candidate.get("reason"):
+                    arguments["reason"] = candidate["reason"]
+                    break
+            if arguments.get("reason"):
+                break
+    arguments.pop("confirmed", None)
+    arguments.pop("thought", None)
+    return action, arguments
+
+
+def _proposal_payload(result):
+    return {
+        "type": result["action"],
+        "arguments": result["arguments"],
+        "customer_consequences": result["consequences"],
+        "policy_evidence": result["policy_evidence"],
+        "order_version": result["order_version"],
+        "action_hash": result["action_hash"],
+        "customer_confirmed": True,
+    }
+
+
 class EnqueueError(RuntimeError):
     pass
 
@@ -185,6 +225,38 @@ class WorkflowCoordinator:
             work.session_id = context["session_id"]
             work.request_id = request["id"]
             safe_text, note = policy.check_input(request["summary"])
+            decision = policy.confirmation_decision(safe_text) if work.pending else None
+            if work.pending and decision is not None:
+                action, arguments = _pending_arguments(conversation, work.pending)
+                if decision is False:
+                    work.pending = None
+                    safe = "Understood — I won’t proceed. No account action was taken."
+                    proposed = {"type": "send_resolution", "arguments": {}, "policy_evidence": []}
+                elif not action or (action == "start_return" and not arguments.get("reason")):
+                    work.pending = None
+                    safe = ("I couldn’t safely recover the return details, so no action was taken. "
+                            "Please tell me which order you want to return and why.")
+                    proposed = {"type": "send_resolution", "arguments": {}, "policy_evidence": []}
+                else:
+                    result = policy.guarded_run(action, {**arguments, "confirmed": True}, work)
+                    work.record(action, arguments, result)
+                    if result.get("proposal"):
+                        label = "return" if action == "start_return" else "cancellation"
+                        safe = (f"Thanks — I submitted the {label} proposal for human review. "
+                                "No account action has been taken yet.")
+                        proposed = _proposal_payload(result)
+                    else:
+                        safe = result.get("error") or (
+                            "I couldn’t create the proposal, so no account action was taken."
+                        )
+                        proposed = {"type": "send_resolution", "arguments": {}, "policy_evidence": []}
+                conversation.add_assistant({"role": "assistant", "content": safe})
+                self.repository.save_session(
+                    context["session_id"], conversation.history, work.to_dict(), context["planner"]
+                )
+                self.repository.remember(work.to_dict(), context["session_id"])
+                return safe, proposed
+            work._confirmation_verified = False if work.pending else None
             engine = plan_execute.plan_execute if context["planner"] == "plan" else planner.react
             steps = []
             raw = engine(

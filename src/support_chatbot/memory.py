@@ -182,7 +182,7 @@ class WorkingMemory:
     def brief(self):
         """Working memory as a short note the model reads before every step."""
         if not any([self.customer_email, self.orders, self.actions,
-                    self.failures, self.escalation]):
+                    self.failures, self.escalation, self.pending]):
             return None
 
         lines = ["WHAT YOU ALREADY KNOW (do not look these up again):"]
@@ -206,6 +206,13 @@ class WorkingMemory:
             lines.append(f"NOTE: this conversation is already escalated as "
                          f"{self.escalation}. Refer to that ticket rather than "
                          f"escalating again.")
+        if self.pending:
+            action, order_id = self.pending.get("key", ["an action", ""])
+            lines.append(
+                f"AWAITING CUSTOMER CONFIRMATION: {action} for order {order_id}. "
+                "Do not preview it again. The server will consume an unambiguous "
+                "yes; otherwise ask one concise clarification."
+            )
         return "\n".join(lines)
 
     # -- persistence ------------------------------------------------------

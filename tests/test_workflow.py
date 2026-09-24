@@ -12,7 +12,10 @@ from support_chatbot.persistence import IdempotencyConflictError, get_repository
 from support_chatbot.workflow import EnqueueError, LocalWorkflowDispatcher, WorkflowCoordinator
 from support_chatbot.config import settings
 from support_chatbot.hitl_policy import RoutingDecision
+from support_chatbot.memory import ConversationMemory, WorkingMemory
+from support_chatbot import agent_profile, policy
 from support_chatbot import workflow as workflow_module
+from tests.fakes import Reply, tool_call
 
 
 class Dispatcher:
@@ -57,6 +60,179 @@ def submit(client, key="request-key-001", message="Please investigate my order")
         json={"message": message, "planner": "react"},
         headers={"Idempotency-Key": key},
     )
+
+
+def pending_return_request(repository, planner, reply, *, legacy=False):
+    identity, auth_token = repository.login("raj@example.com", "RajDemo!2026")
+    identity_token = set_identity(identity)
+    sid = f"confirm-{planner}-{reply.replace(' ', '-').lower()}"
+    try:
+        work = WorkingMemory()
+        work.customer_email = identity.email
+        work.turn = 1
+        policy.guarded_run(
+            "start_return",
+            {"order_id": "112-1111111-1111111", "reason": "reported defect"},
+            work,
+        )
+        conversation = ConversationMemory(agent_profile.system_prompt())
+        conversation.add_user("My headphones have a real defect")
+        conversation.add_assistant({
+            "role": "assistant",
+            "content": "I can submit a return proposal. Would you like me to proceed?",
+            "tool_calls": [{
+                "id": "call_start_return", "type": "function",
+                "function": {
+                    "name": "start_return",
+                    "arguments": '{"order_id":"112-1111111-1111111","reason":"reported defect"}',
+                },
+            }],
+        })
+        if legacy:
+            work.pending.pop("args")
+        repository.create_session(sid, work.to_dict(), identity.user_id)
+        repository.save_session(sid, conversation.history, work.to_dict(), planner)
+        work.turn = 2
+        conversation.add_user(reply)
+        repository.save_session(sid, conversation.history, work.to_dict(), planner)
+        request, _ = repository.create_support_request(
+            reply, planner, f"confirm-key-{planner}-{legacy}-{reply}", sid,
+        )
+        return request, sid, auth_token
+    finally:
+        reset_identity(identity_token)
+
+
+def load_customer_session(repository, auth_token, sid):
+    identity = repository.authenticate(auth_token)
+    identity_token = set_identity(identity)
+    try:
+        return repository.load_session(sid)
+    finally:
+        reset_identity(identity_token)
+
+
+@pytest.mark.parametrize("planner", ["react", "plan"])
+def test_one_yes_consumes_return_confirmation_and_opens_one_review(
+    planner, fake_llm,
+):
+    repository = get_repository()
+    repository.enforce_auth = True
+    request, sid, auth_token = pending_return_request(
+        repository, planner, "Yes please start a return request.",
+    )
+    coordinator = WorkflowCoordinator(repository, Dispatcher())
+    try:
+        result = coordinator.draft(request["id"])
+        row = repository.support_requests[request["id"]]
+        persisted = load_customer_session(repository, auth_token, sid)
+
+        assert result == {"duplicate": False, "state": "AWAITING_APPROVAL"}
+        assert row["action_name"] == "start_return"
+        assert row["action_arguments"] == {
+            "order_id": "112-1111111-1111111", "reason": "reported defect",
+        }
+        assert row["approval_status"] == "pending"
+        assert persisted["work"]["pending"] is None
+        assert "submitted the return proposal" in row["draft_content"].lower()
+        assert "confirm" not in row["draft_content"].lower()
+        assert fake_llm.calls == []
+    finally:
+        coordinator.close()
+        repository.logout(auth_token)
+
+
+def test_no_declines_pending_return_without_human_review(fake_llm):
+    repository = get_repository()
+    repository.enforce_auth = True
+    request, sid, auth_token = pending_return_request(repository, "react", "No thanks")
+    coordinator = WorkflowCoordinator(repository, Dispatcher())
+    try:
+        result = coordinator.draft(request["id"])
+        row = repository.support_requests[request["id"]]
+
+        assert result == {"duplicate": False, "state": "COMPLETED"}
+        assert row["approval_status"] is None
+        assert load_customer_session(repository, auth_token, sid)["work"]["pending"] is None
+        assert "no account action was taken" in row["draft_content"].lower()
+        assert fake_llm.calls == []
+    finally:
+        coordinator.close()
+        repository.logout(auth_token)
+
+
+def test_refresh_compatible_legacy_pending_state_recovers_original_arguments(fake_llm):
+    repository = get_repository()
+    repository.enforce_auth = True
+    request, _, auth_token = pending_return_request(
+        repository, "react", "Proceed", legacy=True,
+    )
+    coordinator = WorkflowCoordinator(repository, Dispatcher())
+    try:
+        coordinator.draft(request["id"])
+        row = repository.support_requests[request["id"]]
+
+        assert row["status"] == "AWAITING_APPROVAL"
+        assert row["action_arguments"]["reason"] == "reported defect"
+        assert fake_llm.calls == []
+    finally:
+        coordinator.close()
+        repository.logout(auth_token)
+
+
+def test_ambiguous_reply_cannot_be_promoted_to_confirmation_by_model(fake_llm):
+    repository = get_repository()
+    repository.enforce_auth = True
+    request, sid, auth_token = pending_return_request(
+        repository, "react", "Yes, but use another order",
+    )
+    fake_llm.script(
+        Reply(tool_calls=[tool_call(
+            "start_return", order_id="112-1111111-1111111",
+            reason="reported defect", confirmed=True,
+            thought="The customer confirmed the earlier return.",
+        )]),
+        Reply(content="Which order would you like to use instead?"),
+    )
+    coordinator = WorkflowCoordinator(repository, Dispatcher())
+    try:
+        result = coordinator.draft(request["id"])
+        row = repository.support_requests[request["id"]]
+        persisted = load_customer_session(repository, auth_token, sid)
+
+        assert result == {"duplicate": False, "state": "COMPLETED"}
+        assert row["approval_status"] is None
+        assert persisted["work"]["pending"]["key"] == [
+            "start_return", "112-1111111-1111111",
+        ]
+        assert "which order" in row["draft_content"].lower()
+        assert len(fake_llm.calls) == 2
+    finally:
+        coordinator.close()
+        repository.logout(auth_token)
+
+
+def test_confirmation_revalidates_changed_order_before_opening_review(fake_llm):
+    repository = get_repository()
+    repository.enforce_auth = True
+    request, sid, auth_token = pending_return_request(repository, "react", "Yes")
+    repository.orders["112-1111111-1111111"]["status"] = "return started"
+    repository.orders["112-1111111-1111111"]["version"] += 1
+    coordinator = WorkflowCoordinator(repository, Dispatcher())
+    try:
+        result = coordinator.draft(request["id"])
+        row = repository.support_requests[request["id"]]
+        persisted = load_customer_session(repository, auth_token, sid)
+
+        assert result == {"duplicate": False, "state": "COMPLETED"}
+        assert row["approval_status"] is None
+        assert row["action_name"] == "send_resolution"
+        assert persisted["work"]["pending"] is None
+        assert "not delivered yet" in row["draft_content"].lower()
+        assert fake_llm.calls == []
+    finally:
+        coordinator.close()
+        repository.logout(auth_token)
 
 
 def test_duplicate_submission_returns_one_durable_request(workflow_setup):

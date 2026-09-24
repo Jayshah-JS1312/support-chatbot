@@ -36,6 +36,19 @@ _FALSE_AUTHORITY_DATA = re.compile(
     r"(?=.*\b(supervisor|manager|admin|authorized|approved)\b)"
     r"(?=.*\b(data|information|records?|prompt|instructions?)\b)", re.I | re.S)
 _IDENT = re.compile(r"\b(ESC-\d+|RMA-\d+|\d{3}-\d{7}-\d{7})\b")
+_CONFIRM_YES = re.compile(
+    r"^(?:yes|yes please|yes now|yes please do it|yep|yeah|sure|absolutely|"
+    r"correct|confirmed?|i confirm|please proceed|proceed|please do it|"
+    r"go ahead|do it|start it|submit it|"
+    r"yes please (?:start|submit|proceed with) (?:the |a )?(?:return|cancellation)(?: request| proposal)?|"
+    r"(?:start|submit|proceed with) (?:the |a )?(?:return|cancellation)(?: request| proposal)?)$",
+    re.I,
+)
+_CONFIRM_NO = re.compile(
+    r"^(?:no|no thanks|no thank you|cancel that|never mind|nevermind|stop|"
+    r"do not proceed|don't proceed|do not do it|don't do it)$",
+    re.I,
+)
 
 
 # --------------------------------------------------------------------------
@@ -86,6 +99,26 @@ def direct_response(text):
     return None
 
 
+def confirmation_decision(text):
+    """Return True/False only for an unambiguous reply to a pending action.
+
+    Anything that changes scope ("yes, but another order") or asks a question
+    remains undecided. This parser authorizes only a proposal; human approval
+    and execution safeguards still apply later.
+    """
+    normalized = re.sub(r"[^a-z0-9' ]+", " ", text.lower())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if _CONFIRM_NO.fullmatch(normalized):
+        return False
+    if any(word in normalized.split() for word in ("but", "instead", "different", "other", "except")):
+        return None
+    if "?" in text:
+        return None
+    if _CONFIRM_YES.fullmatch(normalized):
+        return True
+    return None
+
+
 # --------------------------------------------------------------------------
 # 2. actions
 # --------------------------------------------------------------------------
@@ -114,10 +147,17 @@ def guarded_run(name, args, work):
         key = [name, args.get("order_id", "")]
         pending = work.pending
         if confirmed and pending and pending["key"] == key \
+                and getattr(work, "_confirmation_verified", None) is False:
+            observe.log("policy", stage="action", rule="confirmation_ambiguous",
+                        tool=name, order_id=key[1])
+            return {"needs_confirmation": True,
+                    "message": "The customer's latest reply was not an unambiguous "
+                               "confirmation. Ask one clear confirmation question."}
+        if confirmed and pending and pending["key"] == key \
                 and work.turn > pending["turn"]:
             work.pending = None                      # spent
         else:
-            work.pending = {"key": key, "turn": work.turn}
+            work.pending = {"key": key, "turn": work.turn, "args": args}
             observe.log("policy", stage="action", rule="confirmation_required",
                         tool=name, order_id=key[1])
             return {"needs_confirmation": True,
