@@ -20,6 +20,8 @@ baseline.
 - FastAPI application served by Uvicorn with validated request schemas
 - PostgreSQL-backed orders, conversations, verified customer memory, and audit data
 - Supabase-compatible versioned migrations with reproducible demo seeds
+- Optional deterministic Phase-12 dataset with exactly 10,000 synthetic core
+  business records spread across 12 test customers
 - Customer/admin authentication with revocable, rotating server-side sessions
 - PostgreSQL RLS-backed ownership isolation for customer data
 - Durable `202 Accepted` support requests orchestrated by Upstash Workflow
@@ -106,6 +108,30 @@ Local demo sign-in accounts are:
 | Customer | `raj@example.com` | `RajDemo!2026` |
 | Customer | `mei@example.com` | `MeiDemo!2026` |
 | Admin | `admin@example.com` | `AdminDemo!2026` |
+
+### Optional synthetic dataset
+
+The normal application starts with only the small demo dataset. To install the
+larger development dataset, run this explicit Docker profile:
+
+```bash
+docker compose --profile seed run --rm synthetic-seed
+```
+
+The command reproducibly replaces only dataset `synthetic-dev-phase12-v1` and
+leaves demo/user-created data untouched. It creates 12 authenticated synthetic
+customers (`synthetic+customer01@example.invalid` through
+`synthetic+customer12@example.invalid`, password `SyntheticDemo!2026`) connected
+to 3,000 orders, 4,000 order events, 2,000 workflow requests, and 1,000 support
+tickets. It also creates representative conversations, approval drafts, pending
+reviews, supervisor escalations, approvals, rejections, expiries, refunds, and
+return edge cases.
+
+Synthetic rows use the `[SYNTHETIC]` label, `SYN-*` references, reserved UUIDs,
+and metadata containing `"synthetic": true`. The bulk seed is not a migration
+and is never run during normal startup. Its CLI refuses to run unless the
+environment, enable flag, exact database name, confirmation phrase, and a
+non-hosted database target all pass validation.
 
 These credentials are test fixtures only. Replace or remove them before using
 the schema with real customer data.

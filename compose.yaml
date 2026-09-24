@@ -50,6 +50,22 @@ services:
       - support-chatbot-cache:/data/cache
     restart: unless-stopped
 
+  synthetic-seed:
+    profiles: ["seed"]
+    build: .
+    command: ["support-chatbot-seed-synthetic", "--confirm", "SYNTHETIC_DATA_ONLY"]
+    environment:
+      SUPPORT_CHATBOT_ENVIRONMENT: development
+      SUPPORT_CHATBOT_ENABLE_SYNTHETIC_SEED: "true"
+      SUPPORT_CHATBOT_SYNTHETIC_SEED_DATABASE: support_chatbot
+      DATABASE_URL: postgresql://support_chatbot:support_chatbot@postgres:5432/support_chatbot
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
 volumes:
   support-chatbot-postgres:
   support-chatbot-cache:

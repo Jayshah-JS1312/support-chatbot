@@ -27,7 +27,7 @@ def test_all_phase_two_tables_exist():
         "audit_events", "evaluation_runs", "evaluation_results",
         "auth_sessions", "password_reset_tokens",
         "workflow_dead_letters", "action_proposals",
-        "support_tickets",
+        "support_tickets", "synthetic_seed_runs",
     }
     try:
         with repository.pool.connection() as connection:

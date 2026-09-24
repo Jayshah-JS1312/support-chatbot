@@ -29,6 +29,7 @@ dev = ["build>=1,<2", "httpx>=0.27,<1", "pytest>=8,<9"]
 support-chatbot = "support_chatbot.cli:main"
 support-chatbot-web = "support_chatbot.web:main"
 support-chatbot-migrate = "support_chatbot.db_migrations:main"
+support-chatbot-seed-synthetic = "support_chatbot.synthetic_seed:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
