@@ -55,6 +55,18 @@ class ChatRequest(StrictRequest):
     planner: Literal["react", "plan"] = "react"
 
 
+class RenameConversationRequest(StrictRequest):
+    title: str = Field(min_length=1, max_length=100)
+
+    @field_validator("title")
+    @classmethod
+    def trim_title(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+
 class ApprovalDecisionRequest(StrictRequest):
     decision: Literal["approve", "reject"]
     reason: str = Field(default="", max_length=2_000)

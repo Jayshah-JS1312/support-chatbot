@@ -36,8 +36,16 @@ class AuthenticationMiddleware:
         cookie_name = auth_cookie_for_scope(scope)
         fallback_name = (CUSTOMER_AUTH_COOKIE if cookie_name == ADMIN_AUTH_COOKIE
                          else ADMIN_AUTH_COOKIE)
+        query = scope.get("query_string", b"").decode("latin-1")
+        explicit_role = (scope.get("path") == "/login" or
+                         scope.get("path", "").startswith("/auth/")) and (
+                             "role=customer" in query or "role=admin" in query
+                         )
         identity = None
-        for candidate in (cookie_name, fallback_name):
+        # An explicit role is a browser-context boundary. In particular, a
+        # customer logout must not silently inherit an admin cookie that is
+        # valid in another tab.
+        for candidate in ((cookie_name,) if explicit_role else (cookie_name, fallback_name)):
             morsel = cookie.get(candidate)
             if not morsel:
                 continue

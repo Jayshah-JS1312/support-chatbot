@@ -305,10 +305,16 @@ class PostgresRepository:
 
     def create_escalation(self, summary):
         identity = current_identity()
+        idempotency_key = f"escalation:{uuid.uuid4().hex}"
+        payload_hash = hashlib.sha256(summary.encode()).hexdigest()
         with self.connection() as conn:
             ref = conn.execute("select 'ESC-' || nextval('public.support_reference_seq') as reference").fetchone()["reference"]
-            conn.execute("""insert into public.support_requests(reference_number,user_id,request_type,summary,status)
-                values(%s,%s,'escalation',%s,'open')""", (ref, identity.user_id, summary))
+            conn.execute("""insert into public.support_requests
+                (reference_number,user_id,request_type,summary,status,idempotency_key,
+                 payload_hash,completed_at,metadata)
+                values(%s,%s,'escalation',%s,'COMPLETED',%s,%s,now(),
+                       '{"source":"agent_handoff"}'::jsonb)""",
+                (ref, identity.user_id, summary, idempotency_key, payload_hash))
         return ref
 
     def create_support_request(self, summary, planner, idempotency_key, session_id=None):
@@ -1194,9 +1200,14 @@ class PostgresRepository:
             )
             conn.execute(
                 """update public.support_requests set last_error=%s,
-                processing_lease_until=null,next_enqueue_at=now(),updated_at=now()
+                status='COMPLETED_WITHOUT_ACTION', completed_at=now(),
+                processing_lease_until=null,next_enqueue_at=now(),updated_at=now(),
+                metadata=metadata || jsonb_build_object(
+                    'customer_status', %s::text, 'failure_closed', true)
                 where id=%s and status not in ('COMPLETED','COMPLETED_WITHOUT_ACTION')""",
-                (f"workflow dead-letter: {status}", request_id),
+                (f"workflow dead-letter: {status}",
+                 "Ami could not finish this response. No account action was taken. Please try again.",
+                 request_id),
             )
 
     def session_exists(self, sid):
@@ -1214,7 +1225,7 @@ class PostgresRepository:
         with self.connection() as conn:
             rows = conn.execute(
                 """select c.browser_session_id,
-                coalesce((select left(m.content,80) from public.messages m
+                coalesce(nullif(c.title,''),(select left(m.content,80) from public.messages m
                     where m.conversation_id=c.id and m.role='user'
                     order by m.sequence_number limit 1),'New conversation') as title,
                 c.created_at,c.updated_at,
@@ -1232,6 +1243,97 @@ class PostgresRepository:
             "created_at": row["created_at"].isoformat(),
             "updated_at": row["updated_at"].isoformat(),
         } for row in rows]
+
+    def rename_conversation(self, sid, title):
+        identity = current_identity()
+        with self.connection() as conn:
+            row = conn.execute(
+                """update public.conversations set title=%s,updated_at=now()
+                where browser_session_id=%s and user_id=%s returning id""",
+                (title.strip(), sid, identity.user_id),
+            ).fetchone()
+        return bool(row)
+
+    @staticmethod
+    def _empty_memory_summary():
+        return {"first_seen": date.today().isoformat(), "sessions": [],
+                "orders_discussed": [], "actions": [], "escalations": [], "refusals": 0}
+
+    def _rebuild_user_memory(self, conn, user_id):
+        """Recompute derived memory so deleted transcripts cannot be recalled."""
+        rows = conn.execute(
+            """select browser_session_id,working_memory from public.conversations
+            where user_id=%s order by created_at""", (user_id,),
+        ).fetchall()
+        conn.execute("delete from public.memory_facts where user_id=%s", (user_id,))
+        conn.execute("delete from public.memory_summaries where user_id=%s", (user_id,))
+        if not rows:
+            return
+        summary = self._empty_memory_summary()
+        summary["last_seen"] = date.today().isoformat()
+        facts = {}
+        for row in rows:
+            work = dict(row["working_memory"] or {})
+            summary["sessions"].append(row["browser_session_id"])
+            for key, values in (
+                ("orders_discussed", list(work.get("orders", {}))),
+                ("actions", work.get("actions", [])),
+                ("escalations", [work["escalation"]] if work.get("escalation") else []),
+            ):
+                summary[key].extend(value for value in values if value not in summary[key])
+            summary["refusals"] = max(summary["refusals"], len(work.get("failures", [])))
+            facts.update(work.get("orders", {}))
+        conn.execute(
+            "insert into public.memory_summaries(user_id,summary) values(%s,%s)",
+            (user_id, Jsonb(summary)),
+        )
+        for order_id, value in facts.items():
+            conn.execute(
+                """insert into public.memory_facts(user_id,fact_type,fact_key,value)
+                values(%s,'order',%s,%s)""", (user_id, order_id, Jsonb(value)),
+            )
+
+    def delete_conversation(self, sid):
+        identity = current_identity()
+        with self.connection() as conn:
+            conversation = conn.execute(
+                """select id from public.conversations
+                where browser_session_id=%s and user_id=%s for update""",
+                (sid, identity.user_id),
+            ).fetchone()
+            if not conversation:
+                return False
+            active = conn.execute(
+                """select 1 from public.support_requests where conversation_id=%s
+                and status in ('RECEIVED','QUEUED','DRAFTING','AWAITING_APPROVAL','APPROVED','EXECUTING')
+                limit 1""", (conversation["id"],),
+            ).fetchone()
+            if active:
+                raise ConversationBusyError(sid)
+            # Completed workflow and action records are regulatory/audit data,
+            # not chat history. Keep them but remove customer-authored text.
+            conn.execute(
+                """update public.resolution_drafts set content='[conversation deleted by customer]'
+                where support_request_id in
+                  (select id from public.support_requests where conversation_id=%s)""",
+                (conversation["id"],),
+            )
+            conn.execute(
+                """update public.support_requests
+                set summary='[conversation deleted by customer]',conversation_id=null,
+                    metadata=metadata - 'customer_message'
+                where conversation_id=%s""", (conversation["id"],),
+            )
+            conn.execute(
+                """insert into public.audit_events
+                (user_id,actor_type,actor_id,event_type,resource_type,resource_id,detail)
+                values(%s,'customer',%s,'conversation_deleted','conversation',%s,
+                       '{"transcript_removed":true,"derived_memory_rebuilt":true}'::jsonb)""",
+                (identity.user_id, identity.user_id, sid),
+            )
+            conn.execute("delete from public.conversations where id=%s", (conversation["id"],))
+            self._rebuild_user_memory(conn, identity.user_id)
+        return True
 
     def create_session(self, sid, work, user_id=None):
         identity = current_identity()
@@ -1850,6 +1952,14 @@ class InMemoryRepository:
     def record_dead_letter(self, request_id, workflow_run_id, status, body, headers):
         entry = {"request_id": str(request_id), "workflow_run_id": workflow_run_id, "status": status, "body": body, "headers": headers}
         if entry not in self.dead_letters: self.dead_letters.append(entry)
+        row = self.support_requests.get(str(request_id))
+        if row and row.get("status") not in {"COMPLETED", "COMPLETED_WITHOUT_ACTION"}:
+            row["status"] = "COMPLETED_WITHOUT_ACTION"
+            row["completed_at"] = datetime.now(timezone.utc).isoformat()
+            row["last_error"] = f"workflow dead-letter: {status}"
+            row.setdefault("metadata", {})["customer_status"] = (
+                "Ami could not finish this response. No account action was taken. Please try again."
+            )
     def session_exists(self, sid): return sid in self.sessions
     def latest_session_id(self, user_id):
         matches = [sid for sid, value in self.sessions.items() if value.get("user_id") == user_id]
@@ -1865,12 +1975,44 @@ class InMemoryRepository:
             if not first:
                 continue
             rows.append({"conversation_id": sid,
-                         "title": (first or "New conversation")[:80],
+                         "title": (value.get("title") or first or "New conversation")[:100],
                          "message_count": len([m for m in value.get("history", [])
                                                if m.get("role") in {"user", "assistant"}]),
                          "created_at": None, "updated_at": None})
             if len(rows) >= limit: break
         return copy.deepcopy(rows)
+    def rename_conversation(self, sid, title):
+        identity = current_identity(); value = self.sessions.get(sid)
+        if not value or not identity or value.get("user_id") != identity.user_id: return False
+        value["title"] = title.strip()
+        return True
+    def _rebuild_memory_for_user(self, user_id):
+        profile = next((p for p in self.profiles.values() if p["id"] == user_id), None)
+        if not profile: return
+        self.memories.pop(profile["email"], None)
+        for sid, value in self.sessions.items():
+            if value.get("user_id") == user_id:
+                self.remember(value.get("work", {}), sid)
+    def delete_conversation(self, sid):
+        identity = current_identity(); value = self.sessions.get(sid)
+        if not value or not identity or value.get("user_id") != identity.user_id: return False
+        if any(row.get("conversation_id") == sid and row.get("status") in {
+            "RECEIVED", "QUEUED", "DRAFTING", "AWAITING_APPROVAL", "APPROVED", "EXECUTING"
+        } for row in self.support_requests.values()):
+            raise ConversationBusyError(sid)
+        for row in self.support_requests.values():
+            if row.get("conversation_id") == sid:
+                row["conversation_id"] = None; row["browser_session_id"] = None
+                row["summary"] = "[conversation deleted by customer]"
+                row.pop("draft_content", None)
+        del self.sessions[sid]
+        self.audit_events.append({"event_type": "conversation_deleted",
+                                  "actor_id": identity.user_id, "resource_id": sid,
+                                  "detail": {"transcript_removed": True,
+                                             "derived_memory_rebuilt": True},
+                                  "created_at": datetime.now(timezone.utc).isoformat()})
+        self._rebuild_memory_for_user(identity.user_id)
+        return True
     def create_session(self, sid, work, user_id=None):
         identity = current_identity(); owner = user_id or (identity.user_id if identity else None)
         self.sessions.setdefault(sid, {"history": [], "work": copy.deepcopy(work), "user_id": owner})

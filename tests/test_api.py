@@ -237,6 +237,76 @@ def test_new_conversation_preserves_old_thread_and_can_restore_it(api_client):
     assert restored.json()["transcript"][0]["content"] == "Keep this old chat"
 
 
+def test_customer_can_rename_and_delete_completed_conversation(api_client):
+    client, runtime = api_client
+    client.get("/")
+    sid = client.get("/state").json()["conversation_id"]
+    created = client.post(
+        "/chat", json={"message": "A chat to manage", "planner": "react"},
+        headers={"Idempotency-Key": "manage-chat-thread"},
+    ).json()
+    runtime.repository.support_requests[created["request_id"]]["status"] = "COMPLETED"
+    runtime.repository.memories["raj@example.com"] = {
+        "sessions": [sid], "orders_discussed": [], "actions": [],
+        "escalations": [], "refusals": 0,
+    }
+
+    renamed = client.patch(f"/conversations/{sid}", json={"title": "Shipping help"})
+    assert renamed.status_code == 200
+    assert client.get("/conversations").json()["items"][0]["title"] == "Shipping help"
+
+    deleted = client.delete(f"/conversations/{sid}")
+    assert deleted.status_code == 200
+    assert deleted.json()["conversation_id"] != sid
+    assert runtime.repository.support_requests[created["request_id"]]["conversation_id"] is None
+    assert "raj@example.com" not in runtime.repository.memories
+    assert client.get("/conversations").json()["items"] == []
+
+
+def test_active_conversation_cannot_be_deleted(api_client):
+    client, _ = api_client
+    client.get("/")
+    sid = client.get("/state").json()["conversation_id"]
+    client.post(
+        "/chat", json={"message": "Still processing", "planner": "react"},
+        headers={"Idempotency-Key": "active-delete-guard"},
+    )
+    response = client.delete(f"/conversations/{sid}")
+    assert response.status_code == 409
+
+
+def test_dead_letter_closes_request_instead_of_leaving_spinner(api_client):
+    client, runtime = api_client
+    client.get("/")
+    created = client.post(
+        "/chat", json={"message": "Ambiguous request", "planner": "react"},
+        headers={"Idempotency-Key": "dead-letter-terminal"},
+    ).json()
+    runtime.repository.record_dead_letter(
+        created["request_id"], "local-workflow", 500, "database failure", {},
+    )
+
+    status = client.get(f"/requests/{created['request_id']}").json()
+    assert status["state"] == "COMPLETED_WITHOUT_ACTION"
+    assert "No account action was taken" in status["reply"]
+
+
+def test_customer_logout_does_not_inherit_admin_cookie(api_client):
+    client, _ = api_client
+    admin = client.post(
+        "/auth/login?role=admin",
+        json={"email": "admin@example.com", "password": "AdminDemo!2026"},
+    )
+    assert admin.status_code == 200
+    logged_out = client.post("/auth/logout?role=customer")
+    assert logged_out.status_code == 200
+
+    login_page = client.get("/login?role=customer")
+    assert "url=/admin/approvals" not in login_page.text
+    assert "Sign in" in login_page.text
+    assert client.get("/admin/approvals").status_code == 200
+
+
 def test_customer_page_has_identity_quick_actions_history_and_ticket_notifications(api_client):
     client, _ = api_client
     page = client.get("/").text
@@ -247,6 +317,8 @@ def test_customer_page_has_identity_quick_actions_history_and_ticket_notificatio
     assert "document.title=`${copy[0]} · Ami Support`" in page
     assert "waitForTurn" in page
     assert "renderConversation" in page
+    assert "renameConversation" in page
+    assert "deleteConversation" in page
 
 
 def test_empty_conversations_are_not_listed(api_client):

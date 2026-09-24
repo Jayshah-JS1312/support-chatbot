@@ -110,6 +110,12 @@ class RuntimeState:
         with self.session_lock:
             return self.turn_locks.setdefault(sid, threading.RLock())
 
+    def discard_session(self, sid):
+        """Evict a deleted durable conversation from process-local state."""
+        with self.session_lock:
+            self.sessions.pop(sid, None)
+            self.turn_locks.pop(sid, None)
+
     def reload_session(self, sid, user_id):
         persisted = self.repository.load_session(sid)
         if not persisted:

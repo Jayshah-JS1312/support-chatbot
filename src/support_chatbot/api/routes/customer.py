@@ -14,6 +14,7 @@ from support_chatbot.api.models import (
     ActionPreviewRequest,
     ChatRequest,
     FeedbackRequest,
+    RenameConversationRequest,
     ResetRequest,
 )
 from support_chatbot.api.runtime import CHAT_PAGE
@@ -59,6 +60,40 @@ def current_state(request: Request, context=Depends(session)):
 @router.get("/conversations")
 def conversations(request: Request, _=Depends(require_customer)):
     return {"items": runtime(request).repository.list_conversations()}
+
+
+@router.patch("/conversations/{conversation_id}")
+def rename_conversation(
+    conversation_id: str, payload: RenameConversationRequest,
+    request: Request, _=Depends(require_customer),
+):
+    if not runtime(request).repository.rename_conversation(conversation_id, payload.title):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"ok": True, "conversation_id": conversation_id, "title": payload.title}
+
+
+@router.delete("/conversations/{conversation_id}")
+def delete_conversation(
+    conversation_id: str, request: Request, response: Response,
+    user=Depends(require_customer),
+):
+    app_runtime = runtime(request)
+    try:
+        deleted = app_runtime.repository.delete_conversation(conversation_id)
+    except ConversationBusyError as error:
+        raise HTTPException(
+            status_code=409,
+            detail="This conversation has an active request. Wait for it to finish before deleting it.",
+        ) from error
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    app_runtime.discard_session(conversation_id)
+    replacement_id = None
+    if request.cookies.get("sid") == conversation_id:
+        replacement = app_runtime.create_session(user.user_id, user.email)
+        replacement_id = replacement.sid
+        set_session_cookie(response, replacement)
+    return {"ok": True, "conversation_id": replacement_id}
 
 
 @router.post("/conversations", status_code=201)
