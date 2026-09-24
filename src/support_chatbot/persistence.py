@@ -56,6 +56,10 @@ class IdempotencyConflictError(RuntimeError):
     pass
 
 
+class ConversationBusyError(RuntimeError):
+    pass
+
+
 class InvalidWorkflowTransition(RuntimeError):
     pass
 
@@ -314,9 +318,17 @@ class PostgresRepository:
             conversation = None
             if session_id:
                 conversation = conn.execute(
-                    "select id from public.conversations where browser_session_id=%s",
+                    "select id from public.conversations where browser_session_id=%s for update",
                     (session_id,),
                 ).fetchone()
+                active = conn.execute(
+                    """select 1 from public.support_requests
+                    where conversation_id=%s and idempotency_key<>%s
+                    and status in ('RECEIVED','QUEUED','DRAFTING')
+                    limit 1""", (conversation["id"], idempotency_key),
+                ).fetchone() if conversation else None
+                if active:
+                    raise ConversationBusyError(session_id)
             reference = conn.execute(
                 "select 'REQ-' || nextval('public.support_reference_seq') as reference"
             ).fetchone()["reference"]
@@ -337,6 +349,7 @@ class PostgresRepository:
                 ).fetchone()
                 if row["payload_hash"] != payload_hash:
                     raise IdempotencyConflictError(idempotency_key)
+            row["browser_session_id"] = session_id
         return self._workflow_request(row), created
 
     def create_action_proposal(self, action, arguments):
@@ -457,9 +470,10 @@ class PostgresRepository:
         identity = current_identity()
         with self.connection() as conn:
             row = conn.execute(
-                """select r.*, d.content as draft_content, d.proposed_action,
+                """select r.*, c.browser_session_id, d.content as draft_content, d.proposed_action,
                 a.status as approval_status, a.decision_reason, a.expires_at
                 from public.support_requests r
+                left join public.conversations c on c.id=r.conversation_id
                 left join public.resolution_drafts d on d.support_request_id=r.id
                 left join public.approval_tasks a on a.resolution_draft_id=d.id
                 where r.id=%s and (%s='admin' or r.user_id=%s)""",
@@ -471,9 +485,10 @@ class PostgresRepository:
         identity = current_identity()
         with self.connection() as conn:
             rows = conn.execute(
-                """select r.*,d.content as draft_content,d.proposed_action,d.action_name,
+                """select r.*,c.browser_session_id,d.content as draft_content,d.proposed_action,d.action_name,
                 a.status as approval_status,a.decision_reason,a.expires_at
                 from public.support_requests r
+                left join public.conversations c on c.id=r.conversation_id
                 left join public.resolution_drafts d on d.support_request_id=r.id
                 left join public.approval_tasks a on a.resolution_draft_id=d.id
                 where (%s='admin' or r.user_id=%s)
@@ -1205,7 +1220,10 @@ class PostgresRepository:
                 c.created_at,c.updated_at,
                 (select count(*) from public.messages m where m.conversation_id=c.id) as message_count
                 from public.conversations c
-                where c.user_id=%s order by c.updated_at desc limit %s""",
+                where c.user_id=%s and exists (
+                    select 1 from public.messages present
+                    where present.conversation_id=c.id and present.role='user'
+                ) order by c.updated_at desc limit %s""",
                 (identity.user_id, limit),
             ).fetchall()
         return [{
@@ -1395,10 +1413,17 @@ class InMemoryRepository:
             existing = self.support_requests[existing_id]
             if existing["payload_hash"] != payload_hash: raise IdempotencyConflictError(idempotency_key)
             return copy.deepcopy(existing), False
+        if session_id and any(
+            row.get("conversation_id") == session_id
+            and row.get("status") in {"RECEIVED", "QUEUED", "DRAFTING"}
+            for row in self.support_requests.values()
+        ):
+            raise ConversationBusyError(session_id)
         request_id = str(uuid.uuid4())
         created_at = datetime.now(timezone.utc).isoformat()
         row = {"id": request_id, "reference_number": f"REQ-{1001 + len(self.support_requests)}",
                "user_id": identity.user_id, "conversation_id": session_id,
+               "browser_session_id": session_id,
                "summary": summary, "status": "RECEIVED", "metadata": {"planner": planner},
                "idempotency_key": idempotency_key, "payload_hash": payload_hash,
                "workflow_run_id": None, "enqueue_attempts": 0, "enqueued_at": None,
@@ -1837,6 +1862,8 @@ class InMemoryRepository:
                 continue
             first = next((m.get("content") for m in value.get("history", [])
                           if m.get("role") == "user" and m.get("content")), None)
+            if not first:
+                continue
             rows.append({"conversation_id": sid,
                          "title": (first or "New conversation")[:80],
                          "message_count": len([m for m in value.get("history", [])

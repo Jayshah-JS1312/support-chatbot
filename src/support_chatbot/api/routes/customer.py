@@ -18,7 +18,11 @@ from support_chatbot.api.models import (
 )
 from support_chatbot.api.runtime import CHAT_PAGE
 from support_chatbot.config import settings
-from support_chatbot.persistence import ActionProposalError, IdempotencyConflictError
+from support_chatbot.persistence import (
+    ActionProposalError,
+    ConversationBusyError,
+    IdempotencyConflictError,
+)
 
 
 router = APIRouter(tags=["customer"])
@@ -128,6 +132,7 @@ def _customer_request(row, *, created=False, enqueued=None):
     action_required = action_name != "send_resolution"
     result = {
         "request_id": row["id"],
+        "conversation_id": row.get("browser_session_id") or row.get("conversation_id"),
         "reference": row["reference_number"],
         "message": row.get("summary"),
         "state": public_state,
@@ -162,10 +167,15 @@ def _customer_request(row, *, created=False, enqueued=None):
 def recent_requests(
     request: Request,
     limit: int = Query(50, ge=1, le=100),
+    conversation_id: str | None = Query(None, min_length=1, max_length=64),
     context=Depends(session),
 ):
     del context
     rows = runtime(request).repository.list_support_requests(limit)
+    if conversation_id:
+        rows = [row for row in rows if (
+            row.get("browser_session_id") or row.get("conversation_id")
+        ) == conversation_id]
     return {"items": [_customer_request(row) for row in rows]}
 
 
@@ -188,6 +198,11 @@ def submit_request(
         raise HTTPException(
             status_code=409,
             detail="Idempotency-Key was already used with a different request",
+        ) from error
+    except ConversationBusyError as error:
+        raise HTTPException(
+            status_code=409,
+            detail="Wait for Ami to finish the current response before sending another message",
         ) from error
     if created:
         with app_runtime.get_turn_lock(context.sid):

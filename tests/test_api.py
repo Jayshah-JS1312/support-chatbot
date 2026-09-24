@@ -159,6 +159,22 @@ def test_request_is_persisted_before_enqueue_and_returns_accepted(api_client):
     assert runtime.repository.support_requests[body["request_id"]]["summary"] == "Please help me"
 
 
+def test_second_message_is_rejected_until_current_turn_finishes(api_client):
+    client, _ = api_client
+    client.get("/")
+    first = client.post(
+        "/chat", json={"message": "First question", "planner": "react"},
+        headers={"Idempotency-Key": "one-turn-at-a-time-1"},
+    )
+    assert first.status_code == 202
+    second = client.post(
+        "/chat", json={"message": "Second question", "planner": "react"},
+        headers={"Idempotency-Key": "one-turn-at-a-time-2"},
+    )
+    assert second.status_code == 409
+    assert "finish the current response" in second.json()["error"]["message"]
+
+
 def test_customer_can_restore_durable_request_status(api_client):
     client, runtime = api_client
     response = client.post(
@@ -229,6 +245,34 @@ def test_customer_page_has_identity_quick_actions_history_and_ticket_notificatio
         assert text in page
     assert "updateTicketNotice" in page
     assert "document.title=`${copy[0]} · Ami Support`" in page
+    assert "waitForTurn" in page
+    assert "renderConversation" in page
+
+
+def test_empty_conversations_are_not_listed(api_client):
+    client, _ = api_client
+    client.get("/")
+    assert client.get("/conversations").json()["items"] == []
+
+
+def test_requests_can_be_filtered_to_the_open_conversation(api_client):
+    client, _ = api_client
+    client.get("/")
+    first_sid = client.get("/state").json()["conversation_id"]
+    first = client.post(
+        "/chat", json={"message": "Conversation one", "planner": "react"},
+        headers={"Idempotency-Key": "conversation-filter-one"},
+    ).json()
+    second_sid = client.post("/conversations").json()["conversation_id"]
+    second = client.post(
+        "/chat", json={"message": "Conversation two", "planner": "react"},
+        headers={"Idempotency-Key": "conversation-filter-two"},
+    ).json()
+
+    first_items = client.get(f"/requests?conversation_id={first_sid}").json()["items"]
+    second_items = client.get(f"/requests?conversation_id={second_sid}").json()["items"]
+    assert [item["request_id"] for item in first_items] == [first["request_id"]]
+    assert [item["request_id"] for item in second_items] == [second["request_id"]]
 
 
 def test_feedback_is_validated_and_persisted(api_client):
