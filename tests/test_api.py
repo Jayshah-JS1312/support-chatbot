@@ -69,15 +69,18 @@ def test_customer_page_mints_securely_scoped_session_cookie(api_client):
         assert internal not in response.text
 
 
-def test_chat_polling_preserves_reader_scroll_and_uses_ticket_notifications(api_client):
+def test_chat_polling_preserves_reader_scroll_and_keeps_ticket_status_out_of_chat(api_client):
     client, _ = api_client
     page = client.get("/").text
 
     assert "function followsLatest()" in page
     assert "const follow=followsLatest();" in page
     assert "if(follow)scrollToLatest(true);" in page
-    assert "function updateTicketNotice" in page
-    assert 'id="ticketTray"' in page
+    assert "function refreshTicketLink" in page
+    assert 'id="ticketLinkStatus"' in page
+    assert 'id="ticketTray"' not in page
+    assert 'id="activity"' not in page
+    assert "function updateTicketNotice" not in page
     assert "workflow-card" not in page
     assert "bubble.append(body);$('chat').scrollTop=$('chat').scrollHeight" not in page
 
@@ -364,13 +367,13 @@ def test_support_ticket_has_customer_and_admin_views(api_client):
     assert client.get("/tickets.json").json()["items"] == []
 
 
-def test_customer_page_has_identity_quick_actions_history_and_ticket_notifications(api_client):
+def test_customer_page_has_identity_quick_actions_history_and_ticket_status_link(api_client):
     client, _ = api_client
     page = client.get("/").text
     for text in ("Quick actions", "Track a package", "Cancel an order",
                  "Return an order", "Your conversations", "welcomeName"):
         assert text in page
-    assert "updateTicketNotice" in page
+    assert "refreshTicketLink" in page
     assert "document.title=`${copy[0]} · Ami Support`" in page
     assert "waitForTurn" in page
     assert "renderConversation" in page

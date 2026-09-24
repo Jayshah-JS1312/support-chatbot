@@ -90,8 +90,8 @@ durably audited.
 
 The customer UI restores requests from `GET /requests`, not browser memory, and
 polls non-terminal work through `GET /requests/{id}`. Ordinary answers remain
-normal chat bubbles; only human-review work appears in a compact ticket
-notification tray. Draft content is returned as a customer answer only after
+normal chat bubbles; ticket history and status stay on the dedicated customer
+ticket page, with only an open-ticket count in the chat sidebar. Draft content is returned as a customer answer only after
 the request reaches `COMPLETED`; approval alone never appears as a successful
 account action. The latest owned conversation is restored when the browser
 session cookie is missing.

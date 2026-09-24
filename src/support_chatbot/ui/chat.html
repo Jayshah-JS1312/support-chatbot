@@ -76,29 +76,8 @@
       border-radius:10px; padding:0 10px; }
     .secondary { color:var(--text); padding:0 13px; }
     .secondary:hover { border-color:var(--line-strong); background:var(--surface-3); }
-    #ticketTray { flex:0 1 auto; max-height:min(22vh,150px); padding:0 24px; overflow-y:auto;
-      overscroll-behavior:contain; }
-    #ticketTray:not(:empty) { padding-top:12px; }
-    .ticket-notice { max-width:780px; margin:0 auto 8px; display:flex; align-items:flex-start;
-      gap:10px; padding:10px 13px; border:1px solid #59471d; background:#211b0e;
-      border-radius:11px; color:#ffe0a2; }
-    .ticket-notice.complete { border-color:#294c3c; background:#0d201a; color:#c8f7df; }
-    .ticket-notice.failed { border-color:#60363b; background:#241316; color:#ffc0c6; }
-    .ticket-notice strong { display:block; font-size:12px; }
-    .ticket-notice span { display:block; opacity:.78; font-size:11px; }
-    .ticket-notice.updated { animation:ticket-update .7s ease; }
-    @keyframes ticket-update { 50% { border-color:var(--accent); transform:translateY(-1px); } }
-    .ticket-icon { display:grid; place-items:center; width:22px; height:22px; flex:0 0 auto;
-      border-radius:50%; background:rgba(255,176,32,.15); font-weight:800; }
-    #activity { flex:0 1 auto; max-height:min(24vh,180px); padding:0 24px; overflow-y:auto;
-      overscroll-behavior:contain; } #activity:not(:empty) { padding-top:14px; }
-    .activity-item { max-width:780px; margin:0 auto 8px; display:flex; gap:10px; padding:11px 13px;
-      border:1px solid #294c3c; background:#0d201a; border-radius:12px; color:#c8f7df; }
-    .activity-item.escalated { border-color:#59471d; background:#211b0e; color:#ffe0a2; }
-    .activity-icon { display:grid; place-items:center; width:22px; height:22px; flex:0 0 auto;
-      border-radius:50%; background:rgba(80,216,144,.14); font-weight:800; }
-    .activity-item.escalated .activity-icon { background:rgba(255,176,32,.15); }
-    .activity-item span { display:block; opacity:.72; font-size:12px; }
+    .ticket-link-status { font-size:11px; white-space:nowrap; }
+    .ticket-link-status.has-open { color:var(--accent-strong); font-weight:700; }
     #chat { flex:1 1 0; min-height:0; overflow-x:hidden; overflow-y:auto;
       padding:24px clamp(18px,5vw,64px); scroll-behavior:smooth;
       overscroll-behavior:contain; scrollbar-gutter:stable; -webkit-overflow-scrolling:touch; }
@@ -152,11 +131,11 @@
     .inspector-body { flex:1 1 0; min-height:0; padding:18px; overflow-x:hidden;
       overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable;
       -webkit-overflow-scrolling:touch; }
-    .sidebar-content,#activity,#chat,.inspector-body { scrollbar-width:thin;
+    .sidebar-content,#chat,.inspector-body { scrollbar-width:thin;
       scrollbar-color:var(--line-strong) transparent; }
-    .sidebar-content::-webkit-scrollbar,#activity::-webkit-scrollbar,
+    .sidebar-content::-webkit-scrollbar,
     #chat::-webkit-scrollbar,.inspector-body::-webkit-scrollbar { width:9px; }
-    .sidebar-content::-webkit-scrollbar-thumb,#activity::-webkit-scrollbar-thumb,
+    .sidebar-content::-webkit-scrollbar-thumb,
     #chat::-webkit-scrollbar-thumb,.inspector-body::-webkit-scrollbar-thumb {
       background:var(--line-strong); border:2px solid transparent; border-radius:999px;
       background-clip:padding-box; }
@@ -206,7 +185,7 @@
       <button class="quick" data-prompt="Track my package"><b>Track a package</b><span>Check delivery progress</span></button>
       <button class="quick" data-prompt="I want to cancel an order"><b>Cancel an order</b><span>Review eligibility and consequences</span></button>
       <button class="quick" data-prompt="I want to return an order"><b>Return an order</b><span>Start an eligible return</span></button>
-      <a class="nav-link" href="/tickets"><b>Support tickets</b><span>View status →</span></a>
+      <a class="nav-link" href="/tickets"><b>Support tickets</b><span class="ticket-link-status" id="ticketLinkStatus">View status →</span></a>
       <div class="eyebrow">Your conversations</div>
       <div class="conversation-list" id="conversationList"><div class="conversation-empty">Loading conversations…</div></div>
     </div>
@@ -225,8 +204,6 @@
         <button class="secondary" type="button" onclick="logout()">Logout</button>
       </div>
     </header>
-    <div id="ticketTray" aria-live="polite" aria-label="Support ticket updates"></div>
-    <div id="activity" aria-live="polite"></div>
     <div id="chat" role="log" aria-live="polite" aria-label="Conversation messages" tabindex="0">
       <section class="welcome" id="welcome">
         <div class="welcome-icon" aria-hidden="true">✦</div><h1 id="welcomeHeading">How can I help today?</h1>
@@ -273,17 +250,15 @@ function hideWelcome(){const welcome=$('welcome');if(welcome)welcome.remove()}
 function followsLatest(){const chat=$('chat');return chat.scrollHeight-chat.scrollTop-chat.clientHeight<80}
 function scrollToLatest(force=false){const chat=$('chat');if(force||followsLatest())chat.scrollTop=chat.scrollHeight}
 function addMessage(role,text,pending=false,forceScroll=false){hideWelcome();const follow=forceScroll||followsLatest();const item=document.createElement('article');item.className='message '+role;item.innerHTML='<div class="message-avatar"></div><div class="message-body"><div class="message-meta"></div><div class="bubble"></div></div>';item.querySelector('.message-avatar').textContent=role==='customer'?'YOU':'A';item.querySelector('.message-meta').textContent=role==='customer'?'You':'Ami';const bubble=item.querySelector('.bubble');if(pending){bubble.className+=' typing';bubble.setAttribute('aria-label','Ami is thinking');bubble.innerHTML='<i></i><i></i><i></i>'}else bubble.innerHTML=render(text);$('chat').append(item);if(follow)scrollToLatest(true);return item}
-function drawActivity(data){const container=$('activity');container.innerHTML='';for(const action of data.actions||[]){const escalated=action.startsWith('Escalated'),item=document.createElement('div');item.className='activity-item'+(escalated?' escalated':'');item.innerHTML='<div class="activity-icon">'+(escalated?'↗':'✓')+'</div><div><strong></strong><span></span></div>';item.querySelector('strong').textContent=escalated?'Conversation handed to a human':'Account action completed';item.querySelector('span').textContent=escalated?`Ticket ${data.escalation||'created'} · Expect an email within 24 hours.`:action;container.append(item)}}
-function draw(data){drawActivity(data)}
 function normalizedState(state){return state==='QUEUED'?'DRAFTING':state}
 function ticketRequired(data,state){return Boolean(data.action?.required)||['AWAITING_APPROVAL','APPROVED','EXECUTING','REJECTED','EXPIRED'].includes(state)}
-function updateTicketNotice(data,state,copy,connection){if(!ticketRequired(data,state))return;const tray=$('ticketTray'),id=`ticket-${data.request_id}`,existing=document.getElementById(id),previous=existing?.dataset.state,notice=existing||document.createElement('div');notice.id=id;notice.dataset.state=state;notice.className='ticket-notice';if(state==='COMPLETED')notice.classList.add('complete');if(['REJECTED','EXPIRED','COMPLETED_WITHOUT_ACTION'].includes(state)||connection==='offline')notice.classList.add('failed');if(previous&&previous!==state){notice.classList.add('updated');setTimeout(()=>notice.classList.remove('updated'),800);if(['APPROVED','COMPLETED','REJECTED','EXPIRED'].includes(state))document.title=`${copy[0]} · Ami Support`}notice.innerHTML='<div class="ticket-icon"></div><div><strong></strong><span></span></div>';notice.querySelector('.ticket-icon').textContent=state==='COMPLETED'?'✓':notice.classList.contains('failed')?'!':'↗';notice.querySelector('strong').textContent=`Ticket ${data.reference} · ${connection==='offline'?'Status unavailable':copy[0]}`;notice.querySelector('span').textContent=connection==='offline'?'The ticket is safely stored. Reconnect to refresh its status.':(data.status_message||copy[1]);if(!existing)tray.prepend(notice)}
 function workflowBubble(data){const item=addMessage('ami','',true);const bubble=item.querySelector('.bubble');bubble.dataset.requestId=data.request_id;requestBubbles.set(data.request_id,bubble);return bubble}
 function renderWorkflow(bubble,data,connection='online'){
   const follow=followsLatest();
   const state=normalizedState(data.state),copy=STATE_COPY[state]||[state.replaceAll('_',' '),'Status updated.'];
+  const previous=normalizedState(requestData.get(data.request_id)?.state);
   requestData.set(data.request_id,data);
-  updateTicketNotice(data,state,copy,connection);
+  if(previous&&previous!==state&&['APPROVED','COMPLETED','REJECTED','EXPIRED'].includes(state))document.title=`${copy[0]} · Ami Support`;
   if(!bubble)return;
   bubble.classList.remove('typing');bubble.removeAttribute('aria-label');bubble.textContent='';
   if(TERMINAL.has(state)){const reply=data.reply||data.status_message||copy[1];bubble.innerHTML=render(reply);if(state==='COMPLETED')lastAgentResponse=reply}
@@ -298,7 +273,8 @@ async function refreshRequest(id,manual=false){
   try{const response=await fetch(`/requests/${id}`,{cache:'no-store'});if(!response.ok)throw new Error(`status ${response.status}`);const data=await response.json();renderWorkflow(bubble,data);return TERMINAL.has(normalizedState(data.state))?'done':'pending'}
   catch(error){renderWorkflow(bubble,previous,'offline');return'offline'}
 }
-function updateSupportTicketNotice(ticket){const tray=$('ticketTray'),id=`support-${ticket.id}`,existing=document.getElementById(id),notice=existing||document.createElement('a');notice.id=id;notice.href='/tickets';notice.className='ticket-notice';if(['resolved','closed'].includes(ticket.status))notice.classList.add('complete');notice.innerHTML='<div class="ticket-icon">↗</div><div><strong></strong><span></span></div>';notice.querySelector('strong').textContent=`Support ticket ${ticket.reference_number} · ${ticket.status.replace('_',' ')}`;notice.querySelector('span').textContent=ticket.resolution||'A human support specialist will review your request.';if(!existing)tray.prepend(notice)}
+function updateTicketLink(tickets){const count=tickets.filter(ticket=>['open','in_progress'].includes(ticket.status)).length,status=$('ticketLinkStatus');status.textContent=count?`${count} open →`:'View status →';status.classList.toggle('has-open',count>0);status.setAttribute('aria-label',count?`${count} open support ticket${count===1?'':'s'}`:'View support ticket status')}
+async function refreshTicketLink(){const response=await fetch('/tickets.json',{cache:'no-store'});if(!response.ok)return;const result=await response.json();updateTicketLink(result.items||[])}
 async function pollRequest(id,bubble){
   if(activePolls.has(id))return;activePolls.add(id);let failures=0;
   try{while(!TERMINAL.has(normalizedState(requestData.get(id)?.state))){await new Promise(resolve=>setTimeout(resolve,failures?Math.min(10000,2000*2**failures):2000));const result=await refreshRequest(id);if(result==='done')break;failures=result==='offline'?(navigator.onLine?Math.min(failures+1,3):3):0}}
@@ -306,7 +282,7 @@ async function pollRequest(id,bubble){
 }
 function setComposerBusy(busy){sending=busy;$('sendButton').disabled=busy;$('messageInput').disabled=busy;$('messageInput').placeholder=busy?'Ami is responding…':'Message Ami about an order…'}
 async function waitForTurn(id,bubble){let failures=0;const started=Date.now();while(!TURN_READY.has(normalizedState(requestData.get(id)?.state))){await new Promise(resolve=>setTimeout(resolve,failures?Math.min(8000,1500*2**failures):1200));const result=await refreshRequest(id);failures=result==='offline'?Math.min(failures+1,3):0;if(Date.now()-started>15000&&!TURN_READY.has(normalizedState(requestData.get(id)?.state))&&bubble){bubble.classList.remove('typing');bubble.removeAttribute('aria-label');bubble.textContent='This is taking longer than usual. Ami is still working and no account action has been taken.'}}const state=normalizedState(requestData.get(id)?.state);if(!TERMINAL.has(state))pollRequest(id,bubble)}
-async function sendMessage(text){text=text.trim();if(!text||sending)return;setComposerBusy(true);addMessage('customer',text,false,true);const pending=addMessage('ami','',true,true);try{const response=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:JSON.stringify({message:text,planner:$('planner').value})});if(!response.ok){const problem=await response.json().catch(()=>null);throw new Error(problem?.error?.message||problem?.detail||'The request could not be submitted.')}const data=await response.json(),bubble=pending.querySelector('.bubble');bubble.dataset.requestId=data.request_id;requestBubbles.set(data.request_id,bubble);renderWorkflow(bubble,data);await waitForTurn(data.request_id,bubble);await loadConversations();await restoreTickets()}catch(error){const bubble=pending.querySelector('.bubble');bubble.classList.remove('typing');bubble.textContent=error.message||'The request could not be submitted. Check your connection and try again.'}finally{setComposerBusy(false);$('messageInput').focus()}}
+async function sendMessage(text){text=text.trim();if(!text||sending)return;setComposerBusy(true);addMessage('customer',text,false,true);const pending=addMessage('ami','',true,true);try{const response=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()},body:JSON.stringify({message:text,planner:$('planner').value})});if(!response.ok){const problem=await response.json().catch(()=>null);throw new Error(problem?.error?.message||problem?.detail||'The request could not be submitted.')}const data=await response.json(),bubble=pending.querySelector('.bubble');bubble.dataset.requestId=data.request_id;requestBubbles.set(data.request_id,bubble);renderWorkflow(bubble,data);await waitForTurn(data.request_id,bubble);await loadConversations();await refreshTicketLink()}catch(error){const bubble=pending.querySelector('.bubble');bubble.classList.remove('typing');bubble.textContent=error.message||'The request could not be submitted. Check your connection and try again.'}finally{setComposerBusy(false);$('messageInput').focus()}}
 $('composer').addEventListener('submit',event=>{event.preventDefault();const text=$('messageInput').value;$('messageInput').value='';$('messageInput').style.height='auto';sendMessage(text)});
 $('messageInput').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();$('composer').requestSubmit()}});
 $('messageInput').addEventListener('input',event=>{event.target.style.height='auto';event.target.style.height=Math.min(event.target.scrollHeight,140)+'px'});
@@ -318,18 +294,19 @@ function bindPromptButtons(){document.querySelectorAll('[data-prompt]').forEach(
 function renderConversation(state,items=[]){currentConversation=state.conversation_id||currentConversation;$('chat').innerHTML='';lastAgentResponse='';requestBubbles.clear();if(items.length){for(const item of items){addMessage('customer',item.message||'Support request');if(TERMINAL.has(normalizedState(item.state))){const reply=item.reply||item.status_message||STATE_COPY[normalizedState(item.state)]?.[1];if(reply){addMessage('ami',reply);lastAgentResponse=reply}}else{const bubble=workflowBubble(item);renderWorkflow(bubble,item);if(!TURN_READY.has(normalizedState(item.state))){setComposerBusy(true);waitForTurn(item.request_id,bubble).finally(()=>setComposerBusy(false))}else pollRequest(item.request_id,bubble)}}}else if(state.transcript?.length){for(const message of state.transcript)addMessage(message.role==='user'?'customer':'ami',message.content);const replies=state.transcript.filter(message=>message.role==='assistant');lastAgentResponse=replies.at(-1)?.content||''}else showWelcome()}
 async function loadConversations(){const response=await fetch('/conversations',{cache:'no-store'});if(!response.ok)return;const data=await response.json();$('conversationList').innerHTML=data.items.length?data.items.map(item=>`<div class="conversation-item ${item.conversation_id===currentConversation?'active':''}"><button class="conversation-link" data-open-conversation="${render(item.conversation_id)}" title="${render(item.title)}">${render(item.title)}</button><span class="conversation-actions"><button class="conversation-action" data-rename-conversation="${render(item.conversation_id)}" data-title="${render(item.title)}" title="Rename conversation" aria-label="Rename ${render(item.title)}">✎</button><button class="conversation-action delete" data-delete-conversation="${render(item.conversation_id)}" data-title="${render(item.title)}" title="Delete conversation" aria-label="Delete ${render(item.title)}">×</button></span></div>`).join(''):'<div class="conversation-empty">No previous conversations yet.</div>';document.querySelectorAll('[data-open-conversation]').forEach(button=>button.onclick=()=>openConversation(button.dataset.openConversation));document.querySelectorAll('[data-rename-conversation]').forEach(button=>button.onclick=()=>renameConversation(button.dataset.renameConversation,button.dataset.title));document.querySelectorAll('[data-delete-conversation]').forEach(button=>button.onclick=()=>deleteConversation(button.dataset.deleteConversation,button.dataset.title))}
 async function renameConversation(id,currentTitle){if(sending)return;const title=prompt('Rename conversation',currentTitle);if(title===null)return;const cleaned=title.trim();if(!cleaned||cleaned.length>100){alert('Use a title between 1 and 100 characters.');return}const response=await fetch(`/conversations/${encodeURIComponent(id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:cleaned})});if(!response.ok){alert('This conversation could not be renamed.');return}await loadConversations()}
-async function deleteConversation(id,title){if(sending)return;if(!confirm(`Delete “${title}”?\n\nThe chat transcript and memory derived from it will be removed. Completed action and audit records are retained in redacted form for safety.`))return;const response=await fetch(`/conversations/${encodeURIComponent(id)}`,{method:'DELETE'});if(!response.ok){const problem=await response.json().catch(()=>null);alert(problem?.detail||'This conversation could not be deleted.');return}const data=await response.json();if(id===currentConversation){currentConversation=data.conversation_id;$('ticketTray').innerHTML='';$('activity').innerHTML='';requestData.clear();requestBubbles.clear();showWelcome()}await loadConversations();$('messageInput').focus()}
-async function newConversation(){if(sending)return;if(!$('chat').querySelector('.message')){document.body.classList.remove('menu-open');$('messageInput').focus();return}const response=await fetch('/conversations',{method:'POST'});if(!response.ok)return;const data=await response.json();currentConversation=data.conversation_id;$('ticketTray').innerHTML='';$('activity').innerHTML='';requestData.clear();requestBubbles.clear();showWelcome();await loadConversations();document.body.classList.remove('menu-open');$('messageInput').focus()}
-async function openConversation(id){if(sending)return;const response=await fetch(`/conversations/${encodeURIComponent(id)}/activate`,{method:'POST'});if(!response.ok)return;const data=await response.json(),requests=await fetch(`/requests?limit=100&conversation_id=${encodeURIComponent(id)}`,{cache:'no-store'}).then(r=>r.json());currentConversation=id;renderConversation(data,requests.items||[]);await restoreTickets();await loadConversations();document.body.classList.remove('menu-open')}
+async function deleteConversation(id,title){if(sending)return;if(!confirm(`Delete “${title}”?\n\nThe chat transcript and memory derived from it will be removed. Completed action and audit records are retained in redacted form for safety.`))return;const response=await fetch(`/conversations/${encodeURIComponent(id)}`,{method:'DELETE'});if(!response.ok){const problem=await response.json().catch(()=>null);alert(problem?.detail||'This conversation could not be deleted.');return}const data=await response.json();if(id===currentConversation){currentConversation=data.conversation_id;requestData.clear();requestBubbles.clear();showWelcome()}await loadConversations();$('messageInput').focus()}
+async function newConversation(){if(sending)return;if(!$('chat').querySelector('.message')){document.body.classList.remove('menu-open');$('messageInput').focus();return}const response=await fetch('/conversations',{method:'POST'});if(!response.ok)return;const data=await response.json();currentConversation=data.conversation_id;requestData.clear();requestBubbles.clear();showWelcome();await loadConversations();document.body.classList.remove('menu-open');$('messageInput').focus()}
+async function openConversation(id){if(sending)return;const response=await fetch(`/conversations/${encodeURIComponent(id)}/activate`,{method:'POST'});if(!response.ok)return;const data=await response.json(),requests=await fetch(`/requests?limit=100&conversation_id=${encodeURIComponent(id)}`,{cache:'no-store'}).then(r=>r.json());currentConversation=id;renderConversation(data,requests.items||[]);await restoreBackgroundWork();await loadConversations();document.body.classList.remove('menu-open')}
 async function logout(){try{await fetch('/auth/logout?role=customer',{method:'POST'})}finally{location.href='/login?role=customer'}}
-async function restoreTickets(){const response=await fetch('/requests?limit=100',{cache:'no-store'});if(!response.ok)return;const data=await response.json();$('ticketTray').innerHTML='';for(const item of data.items){requestData.set(item.request_id,item);const state=normalizedState(item.state),copy=STATE_COPY[state]||[state,'Status updated.'];if(ticketRequired(item,state)){updateTicketNotice(item,state,copy);if(!TERMINAL.has(state)&&!requestBubbles.has(item.request_id))pollRequest(item.request_id,null)}}const tickets=await fetch('/tickets.json',{cache:'no-store'});if(tickets.ok){const result=await tickets.json();for(const ticket of result.items)updateSupportTicketNotice(ticket)}}
+async function restoreBackgroundWork(){const response=await fetch('/requests?limit=100',{cache:'no-store'});if(response.ok){const data=await response.json();for(const item of data.items){requestData.set(item.request_id,item);const state=normalizedState(item.state);if(ticketRequired(item,state)&&!TERMINAL.has(state)&&!requestBubbles.has(item.request_id))pollRequest(item.request_id,null)}}await refreshTicketLink()}
 async function restoreCustomerWorkspace(){
-  const stateResponse=await fetch('/state',{cache:'no-store'});if(!stateResponse.ok)throw new Error('state');const state=await stateResponse.json();currentUser=state.user;currentConversation=state.conversation_id;$('customerIdentity').textContent=state.user.email;$('welcomeName').textContent=`Welcome, ${state.user.display_name}`;const requestsResponse=await fetch(`/requests?limit=100&conversation_id=${encodeURIComponent(currentConversation)}`,{cache:'no-store'}),requests=requestsResponse.ok?await requestsResponse.json():{items:[]};for(const item of requests.items)requestData.set(item.request_id,item);renderConversation(state,requests.items);draw({...state,steps:[]});await restoreTickets();
+  const stateResponse=await fetch('/state',{cache:'no-store'});if(!stateResponse.ok)throw new Error('state');const state=await stateResponse.json();currentUser=state.user;currentConversation=state.conversation_id;$('customerIdentity').textContent=state.user.email;$('welcomeName').textContent=`Welcome, ${state.user.display_name}`;const requestsResponse=await fetch(`/requests?limit=100&conversation_id=${encodeURIComponent(currentConversation)}`,{cache:'no-store'}),requests=requestsResponse.ok?await requestsResponse.json():{items:[]};for(const item of requests.items)requestData.set(item.request_id,item);renderConversation(state,requests.items);await restoreBackgroundWork();
   await loadConversations();
 }
 window.addEventListener('online',()=>{for(const [id,bubble] of requestBubbles){if(!TERMINAL.has(normalizedState(requestData.get(id)?.state))){refreshRequest(id,true);pollRequest(id,bubble)}}});
 bindPromptButtons();
 restoreCustomerWorkspace().catch(()=>addMessage('ami','I could not restore your workspace. Check your connection and refresh to try again.'));
+setInterval(refreshTicketLink,5000);
 </script>
 </body>
 </html>
