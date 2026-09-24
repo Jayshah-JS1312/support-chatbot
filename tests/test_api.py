@@ -3,6 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from support_chatbot import dashboard
 from support_chatbot.api.app import create_app
 from support_chatbot.api.runtime import RuntimeState
 from support_chatbot.persistence import get_repository
@@ -51,6 +52,14 @@ def test_health_readiness_remain_available_but_metrics_require_admin(api_client)
     metrics = client.get("/metrics")
     assert metrics.status_code == 200
     assert "support_agent_turns_total" in metrics.text
+    assert metrics.headers["content-type"].startswith("text/plain")
+    browser_metrics = client.get(
+        "/metrics", headers={"Accept": "text/html"}, follow_redirects=False,
+    )
+    assert browser_metrics.status_code == 303
+    assert browser_metrics.headers["location"] == "/monitoring"
+    assert 'href="/metrics"' not in dashboard.PAGE
+    assert "Operations overview" in dashboard.PAGE
 
 
 def test_customer_page_mints_securely_scoped_session_cookie(api_client):
@@ -324,7 +333,7 @@ def test_admin_cookie_never_authenticates_customer_routes(api_client):
     assert response.headers["location"] == "/login"
 
 
-def test_support_ticket_has_customer_and_admin_views(api_client):
+def test_support_ticket_lifecycle_is_customer_visible_and_transition_safe(api_client):
     client, runtime = api_client
     token = set_identity(Identity(
         "11111111-1111-4111-8111-111111111111",
@@ -348,6 +357,32 @@ def test_support_ticket_has_customer_and_admin_views(api_client):
     admin = client.get("/admin/tickets.json?status=open")
     assert admin.status_code == 200
     assert admin.json()["items"][0]["reference_number"] == reference
+
+    empty_resolution = client.patch(
+        f"/admin/tickets/{ticket['id']}",
+        json={"status": "resolved", "resolution": "   "},
+    )
+    assert empty_resolution.status_code == 422
+    assert "customer will see" in empty_resolution.json()["error"]["message"]
+
+    started = client.patch(
+        f"/admin/tickets/{ticket['id']}",
+        json={"status": "in_progress", "resolution": "private draft must not leak"},
+    )
+    assert started.status_code == 200
+    assert started.json()["status"] == "in_progress"
+    assert started.json()["resolution"] is None
+
+    customer_in_progress = client.get("/tickets.json?role=customer").json()["items"][0]
+    assert customer_in_progress["status"] == "in_progress"
+    assert customer_in_progress["resolution"] is None
+
+    premature_close = client.patch(
+        f"/admin/tickets/{ticket['id']}",
+        json={"status": "closed", "resolution": "Should not close yet"},
+    )
+    assert premature_close.status_code == 409
+
     resolved = client.patch(
         f"/admin/tickets/{ticket['id']}",
         json={"status": "resolved", "resolution": "We contacted the customer."},
@@ -358,6 +393,23 @@ def test_support_ticket_has_customer_and_admin_views(api_client):
     customer_after = client.get("/tickets.json?role=customer")
     assert customer_after.status_code == 200
     assert customer_after.json()["items"][0]["resolution"] == "We contacted the customer."
+    assert customer_after.json()["items"][0]["status"] == "resolved"
+
+    closed = client.patch(
+        f"/admin/tickets/{ticket['id']}",
+        json={"status": "closed", "resolution": "We contacted the customer."},
+    )
+    assert closed.status_code == 200
+    assert closed.json()["status"] == "closed"
+    customer_closed = client.get("/tickets.json?role=customer").json()["items"][0]
+    assert customer_closed["status"] == "closed"
+    assert customer_closed["resolution"] == "We contacted the customer."
+
+    cannot_reopen = client.patch(
+        f"/admin/tickets/{ticket['id']}",
+        json={"status": "in_progress", "resolution": ""},
+    )
+    assert cannot_reopen.status_code == 409
 
     client.post("/auth/logout?role=customer")
     client.post(
@@ -365,6 +417,32 @@ def test_support_ticket_has_customer_and_admin_views(api_client):
         json={"email": "mei@example.com", "password": "MeiDemo!2026"},
     )
     assert client.get("/tickets.json").json()["items"] == []
+
+
+def test_ticket_pages_protect_typing_and_explain_customer_outcomes(api_client):
+    client, _ = api_client
+    customer_page = client.get("/tickets")
+    assert customer_page.status_code == 200
+    for copy in (
+        "Waiting for a support specialist", "currently working",
+        "has responded", "no further work is pending",
+    ):
+        assert copy in customer_page.text
+
+    client.post(
+        "/auth/login?role=admin",
+        json={"email": "admin@example.com", "password": "AdminDemo!2026"},
+    )
+    admin_page = client.get("/admin/tickets")
+    assert admin_page.status_code == 200
+    for contract in (
+        "Response visible to customer", "Draft text stays private",
+        "function editing()", "drafts=new Map()",
+        "if(loading||(!force&&editing()))return",
+        "Send response & resolve",
+    ):
+        assert contract in admin_page.text
+    assert "internal decision note" not in admin_page.text
 
 
 def test_customer_page_has_identity_quick_actions_history_and_ticket_status_link(api_client):

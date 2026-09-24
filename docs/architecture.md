@@ -112,6 +112,13 @@ Support ticket references are scoped to the conversation that created them and
 are not copied into long-term customer memory. This prevents a later issue from
 silently reusing an old escalation.
 
+Human-support tickets use `open → in_progress → resolved → closed`. An operator
+may resolve an open ticket directly, but cannot close unresolved work or reopen
+a closed ticket. Draft responses remain private while work is open or in
+progress. Resolving requires a customer-visible response; closing preserves
+that response as final history. This lifecycle is distinct from approval-task
+outcomes (`approved`, `rejected`, or `expired`).
+
 ## Authentication and authorization
 
 Passwords are bcrypt-hashed. The browser receives an opaque `HttpOnly`,
@@ -140,7 +147,8 @@ responses; RLS is the defense-in-depth boundary.
 
 - `/healthz`: lightweight liveness probe
 - `/readyz`: application readiness and configured model
-- `/metrics`: admin-only, low-cardinality Prometheus text metrics
+- `/metrics`: admin-only, low-cardinality Prometheus text exposition for
+  monitoring collectors (not a human-facing page)
 - `/monitoring`: operator dashboard for queue depth, staged workflow latency,
   decisions, HITL quality, runtime health, and request audit timelines
 - `/evals`: deterministic retrieval quality dashboard (Recall@1, Recall@3,

@@ -94,6 +94,10 @@ Customers can track human-support tickets at <http://127.0.0.1:8000/tickets>,
 and administrators manage them at <http://127.0.0.1:8000/admin/tickets>.
 Monitoring and trace routes require operator authentication, and payloads are
 redacted server-side before they reach the browser or trace download.
+The operator-facing metrics experience is the visual `/monitoring` dashboard.
+`/metrics` is intentionally raw Prometheus exposition for monitoring collectors
+and is not linked as a human-facing page. Browser navigation to that endpoint
+redirects to `/monitoring`.
 
 Local demo sign-in accounts are:
 

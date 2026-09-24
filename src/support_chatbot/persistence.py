@@ -349,13 +349,27 @@ class PostgresRepository:
             raise InvalidWorkflowTransition(status)
         with self.connection() as conn:
             row = conn.execute(
-                """update public.support_tickets set status=%s,resolution=%s,
+                """update public.support_tickets set status=%s,
+                resolution=case when %s='resolved' then %s else resolution end,
                 assigned_to=%s,updated_at=now(),
-                resolved_at=case when %s in ('resolved','closed') then now() else null end
-                where id=%s returning *""",
-                (status, resolution or None, admin_user_id, status, ticket_id),
+                resolved_at=case when %s='resolved' and resolved_at is null then now()
+                                 else resolved_at end
+                where id=%s and (
+                  (status='open' and %s in ('in_progress','resolved')) or
+                  (status='in_progress' and %s='resolved') or
+                  (status='resolved' and %s='closed')
+                ) returning *""",
+                (status, status, resolution or None, admin_user_id, status,
+                 ticket_id, status, status, status),
             ).fetchone()
             if not row:
+                exists = conn.execute(
+                    "select status from public.support_tickets where id=%s", (ticket_id,)
+                ).fetchone()
+                if exists:
+                    raise InvalidWorkflowTransition(
+                        f"Ticket cannot move from {exists['status']} to {status}"
+                    )
                 return None
             conn.execute(
                 """insert into public.audit_events
@@ -1581,9 +1595,22 @@ class InMemoryRepository:
         row = self.support_tickets.get(str(ticket_id))
         if not row: return None
         if status not in {"in_progress", "resolved", "closed"}: raise InvalidWorkflowTransition(status)
-        row.update({"status": status, "resolution": resolution or None,
+        allowed = {
+            "open": {"in_progress", "resolved"},
+            "in_progress": {"resolved"},
+            "resolved": {"closed"},
+            "closed": set(),
+        }
+        if status not in allowed.get(row["status"], set()):
+            raise InvalidWorkflowTransition(
+                f"Ticket cannot move from {row['status']} to {status}"
+            )
+        row.update({"status": status,
                     "assigned_to": admin_user_id, "updated_at": datetime.now(timezone.utc).isoformat(),
-                    "resolved_at": datetime.now(timezone.utc).isoformat() if status in {"resolved", "closed"} else None})
+                    "resolved_at": (datetime.now(timezone.utc).isoformat()
+                                    if status == "resolved" else row.get("resolved_at"))})
+        if status == "resolved":
+            row["resolution"] = resolution or None
         return copy.deepcopy(row)
     def create_support_request(self, summary, planner, idempotency_key, session_id=None):
         identity = current_identity()

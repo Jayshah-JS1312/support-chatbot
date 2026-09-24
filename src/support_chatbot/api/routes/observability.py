@@ -1,7 +1,7 @@
 """Health, metrics, and deterministic retrieval-evaluation routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
 from support_chatbot import dashboard, evals, hitl_evals, observe
 from support_chatbot.api.dependencies import require_admin, require_internal_ui, runtime
@@ -32,8 +32,10 @@ def readiness(request: Request):
     return {"status": "ready", "model": MODEL}
 
 
-@router.get("/metrics", response_class=PlainTextResponse)
+@router.get("/metrics")
 def metrics(request: Request, _admin=Depends(require_admin)):
+    if "text/html" in request.headers.get("accept", "").lower():
+        return RedirectResponse("/monitoring", status_code=303)
     return PlainTextResponse(
         observe.prometheus_metrics(runtime(request).repository.operational_metrics()),
         media_type="text/plain; version=0.0.4",

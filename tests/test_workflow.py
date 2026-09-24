@@ -114,6 +114,16 @@ def test_approval_resumes_later_and_duplicate_execution_is_one_action(workflow_s
     assert duplicate == {"duplicate": True, "state": "COMPLETED"}
     assert list(repository.action_executions) == [f"support-request:{request_id}:execute"]
 
+    client.post("/auth/logout?role=admin")
+    assert client.post("/auth/login?role=customer", json={
+        "email": "raj@example.com", "password": "RajDemo!2026",
+    }).status_code == 200
+    customer = client.get(f"/requests/{request_id}")
+    assert customer.status_code == 200
+    assert customer.json()["state"] == "COMPLETED"
+    assert customer.json()["reply"] == "Proposed safe response"
+    assert customer.json()["action"]["complete"] is False
+
 
 def test_stored_but_unenqueued_request_is_recovered(workflow_setup):
     repository, _, coordinator, _, client = workflow_setup
@@ -170,6 +180,15 @@ def test_rejection_completes_without_execution(workflow_setup):
     )
     assert response.json()["state"] == "COMPLETED"
     assert repository.action_executions == {}
+    client.post("/auth/logout?role=admin")
+    client.post("/auth/login?role=customer", json={
+        "email": "raj@example.com", "password": "RajDemo!2026",
+    })
+    customer = client.get(f"/requests/{request_id}")
+    assert customer.status_code == 200
+    assert customer.json()["state"] == "REJECTED"
+    assert "No action was taken" in customer.json()["reply"]
+    assert "Proposed safe response" not in customer.json()["reply"]
 
 
 def test_admin_inbox_edit_decision_and_audit_are_durable(workflow_setup):
@@ -202,6 +221,15 @@ def test_admin_inbox_edit_decision_and_audit_are_durable(workflow_setup):
     assert row["review_necessary"] is False
     assert repository.audit_events[-1]["detail"]["response_edited"] is True
     assert dispatcher.calls[-1] == (request_id, "execute")
+    assert coordinator.execute(request_id)["state"] == "COMPLETED"
+    customer.post("/auth/logout?role=admin")
+    customer.post("/auth/login?role=customer", json={
+        "email": "raj@example.com", "password": "RajDemo!2026",
+    })
+    visible = customer.get(f"/requests/{request_id}").json()
+    assert visible["state"] == "COMPLETED"
+    assert visible["reply"] == "Updated safe response"
+    assert "Proposed safe response" not in visible["reply"]
 
 
 def test_expired_approval_completes_without_action(workflow_setup):

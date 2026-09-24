@@ -50,9 +50,18 @@ def update_ticket(
     ticket_id: str, payload: TicketUpdateRequest, request: Request,
     admin=Depends(require_admin),
 ):
-    row = runtime(request).repository.update_ticket(
-        ticket_id, payload.status, payload.resolution.strip(), admin.user_id,
-    )
+    resolution = payload.resolution.strip()
+    if payload.status == "resolved" and not resolution:
+        raise HTTPException(
+            status_code=422,
+            detail="Add the response that the customer will see before resolving the ticket",
+        )
+    try:
+        row = runtime(request).repository.update_ticket(
+            ticket_id, payload.status, resolution, admin.user_id,
+        )
+    except InvalidWorkflowTransition as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     if not row:
         raise HTTPException(status_code=404, detail="Support ticket not found")
     return row

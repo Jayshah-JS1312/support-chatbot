@@ -77,12 +77,34 @@ def test_postgres_support_ticket_is_owned_visible_and_resolvable():
         "admin@example.com", "Ami Admin", "admin",
     ))
     try:
+        started = repository.update_ticket(
+            ticket_id, "in_progress", "Private draft must not be published",
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        )
+        assert started["status"] == "in_progress"
+        assert started["resolution"] is None
+        with pytest.raises(InvalidWorkflowTransition):
+            repository.update_ticket(
+                ticket_id, "closed", "Cannot skip resolution",
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            )
         updated = repository.update_ticket(
             ticket_id, "resolved", "Customer contacted",
             "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         )
         assert updated["status"] == "resolved"
         assert updated["resolution"] == "Customer contacted"
+        closed = repository.update_ticket(
+            ticket_id, "closed", "Customer contacted",
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        )
+        assert closed["status"] == "closed"
+        assert closed["resolution"] == "Customer contacted"
+        with pytest.raises(InvalidWorkflowTransition):
+            repository.update_ticket(
+                ticket_id, "in_progress", "Cannot reopen closed work",
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            )
     finally:
         reset_identity(admin_token)
         with repository.pool.connection() as connection:
