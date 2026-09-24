@@ -35,11 +35,18 @@ def api_client(tmp_path):
         yield client, runtime
 
 
-def test_health_readiness_and_metrics_remain_available(api_client):
+def test_health_readiness_remain_available_but_metrics_require_admin(api_client):
     client, _ = api_client
 
     assert client.get("/healthz").json() == {"status": "ok"}
     assert client.get("/readyz").json()["status"] == "ready"
+    assert client.get("/metrics").status_code == 403
+    client.post("/auth/logout")
+    login = client.post(
+        "/auth/login",
+        json={"email": "admin@example.com", "password": "AdminDemo!2026"},
+    )
+    assert login.status_code == 200
     metrics = client.get("/metrics")
     assert metrics.status_code == 200
     assert "support_agent_turns_total" in metrics.text

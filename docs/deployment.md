@@ -52,12 +52,14 @@ deployment unless the route is protected by operator authentication.
 |---|---|---|
 | `/healthz` | Liveness probe | aggregate, no customer data |
 | `/readyz` | Readiness and model name | aggregate, no customer data |
-| `/metrics` | Prometheus metrics | aggregate, no customer data |
+| `/metrics` | Prometheus metrics | admin authentication; aggregate, no customer data |
 | `/monitoring` | Operator dashboard | authenticated admin only |
+| `/logs.json` | Redacted runtime and durable workflow telemetry | authenticated admin only |
+| `/admin/operations/requests/{id}.json` | Redacted request state and audit timeline | authenticated admin only |
 | `/admin/approvals` | Human approval inbox | authenticated admin only |
 | `/evals` | Retrieval evaluation dashboard | authenticated admin only |
 | `/admin/hitl-evals` | HITL recall, escalation precision, and release gate | authenticated admin only |
-| `/trace.jsonl` | Raw agent events | authenticated admin only |
+| `/trace.jsonl` | Server-redacted agent events | authenticated admin only |
 | `POST /chat` | Store and enqueue a request; returns `202` | authenticated customer |
 | `GET /requests` | Restore the customer's recent ticket timeline | authenticated owner |
 | `GET /requests/{id}` | Poll an owned request | authenticated owner |

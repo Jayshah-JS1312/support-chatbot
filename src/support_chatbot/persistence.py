@@ -677,6 +677,125 @@ class PostgresRepository:
         ) if result["decided"] else None
         return result
 
+    def operational_metrics(self):
+        """Aggregate durable queue, workflow latency, and decision health."""
+        with self.connection() as conn:
+            row = conn.execute("""select
+              (select count(*)::int from public.support_requests where status in
+                ('RECEIVED','QUEUED','DRAFTING','APPROVED','EXECUTING')) as queue_depth,
+              (select count(*)::int from public.approval_tasks where status='pending') as pending_approvals,
+              (select extract(epoch from (now()-min(created_at)))::int
+                from public.approval_tasks where status='pending') as oldest_pending_approval_seconds,
+              (select coalesce(sum(greatest(enqueue_attempts-1,0)),0)::int
+                from public.support_requests) as retry_count,
+              (select count(*)::int from public.workflow_dead_letters) as dead_letter_count,
+              (select count(*)::int from public.approval_tasks where status='expired') as expired_approvals,
+              (select percentile_cont(.5) within group(order by extract(epoch from (d.created_at-r.created_at))*1000)
+                from public.resolution_drafts d join public.support_requests r on r.id=d.support_request_id) as drafting_p50_ms,
+              (select percentile_cont(.95) within group(order by extract(epoch from (d.created_at-r.created_at))*1000)
+                from public.resolution_drafts d join public.support_requests r on r.id=d.support_request_id) as drafting_p95_ms,
+              (select percentile_cont(.5) within group(order by extract(epoch from (a.decided_at-a.created_at))*1000)
+                from public.approval_tasks a where a.decided_at is not null) as approval_wait_p50_ms,
+              (select percentile_cont(.95) within group(order by extract(epoch from (a.decided_at-a.created_at))*1000)
+                from public.approval_tasks a where a.decided_at is not null) as approval_wait_p95_ms,
+              (select percentile_cont(.5) within group(order by extract(epoch from (x.started_at-a.decided_at))*1000)
+                from public.action_executions x
+                join public.resolution_drafts d on d.support_request_id=x.support_request_id
+                join public.approval_tasks a on a.resolution_draft_id=d.id
+                where a.decided_at is not null) as resume_p50_ms,
+              (select percentile_cont(.95) within group(order by extract(epoch from (x.started_at-a.decided_at))*1000)
+                from public.action_executions x
+                join public.resolution_drafts d on d.support_request_id=x.support_request_id
+                join public.approval_tasks a on a.resolution_draft_id=d.id
+                where a.decided_at is not null) as resume_p95_ms,
+              (select percentile_cont(.5) within group(order by extract(epoch from (completed_at-created_at))*1000)
+                from public.support_requests where completed_at is not null) as resolution_p50_ms,
+              (select percentile_cont(.95) within group(order by extract(epoch from (completed_at-created_at))*1000)
+                from public.support_requests where completed_at is not null) as resolution_p95_ms
+            """).fetchone()
+            decisions = conn.execute("""select status,count(*)::int as count
+                from public.approval_tasks group by status order by status""").fetchall()
+        result = dict(row)
+        for key, value in result.items():
+            if key.endswith("_ms"):
+                result[key] = round(float(value), 1) if value is not None else None
+        result["decision_breakdown"] = {item["status"]: item["count"] for item in decisions}
+        result.update(self.hitl_operational_metrics())
+        latest = self.latest_hitl_evaluation()
+        summary = (latest or {}).get("summary") or {}
+        result["hitl_recall"] = summary.get("hitl_recall")
+        result["hitl_recall_numerator"] = summary.get("hitl_recall_numerator", 0)
+        result["hitl_recall_denominator"] = summary.get("hitl_recall_denominator", 0)
+        return result
+
+    def operational_requests(self, limit=100):
+        with self.connection() as conn:
+            rows = conn.execute("""select r.id,r.reference_number,r.status,r.created_at,
+                r.updated_at,r.enqueued_at,r.completed_at,r.enqueue_attempts,r.last_error,
+                d.action_name,d.requires_hitl,d.routing_reason,d.created_at as drafted_at,
+                a.status as approval_status,a.created_at as approval_created_at,
+                a.decided_at,a.expires_at,
+                x.started_at as execution_started_at,x.finished_at as execution_finished_at,
+                x.status as execution_status,x.error_code,
+                (select count(*)::int from public.workflow_dead_letters w
+                 where w.support_request_id=r.id) as dead_letters
+                from public.support_requests r
+                left join public.resolution_drafts d on d.support_request_id=r.id
+                left join public.approval_tasks a on a.resolution_draft_id=d.id
+                left join public.action_executions x on x.support_request_id=r.id
+                order by r.created_at desc limit %s""", (limit,)).fetchall()
+        return [self._operational_request(row) for row in rows]
+
+    def _operational_request(self, row):
+        from support_chatbot.operational import explain_state, iso, safe_error_code
+        result = {key: iso(value) for key, value in dict(row).items()}
+        result["id"] = str(result["id"])
+        result["state_explanation"] = explain_state(result["status"])
+        if result.get("last_error"):
+            result["last_error"] = safe_error_code(result["last_error"])
+        return result
+
+    def operational_request_timeline(self, request_id):
+        from support_chatbot.operational import safe_audit_detail
+        with self.connection() as conn:
+            request = conn.execute("""select r.id,r.reference_number,r.status,r.created_at,
+                r.updated_at,r.enqueued_at,r.completed_at,r.enqueue_attempts,r.last_error,
+                d.action_name,d.requires_hitl,d.routing_reason,d.created_at as drafted_at,
+                a.status as approval_status,a.created_at as approval_created_at,a.decided_at,a.expires_at,
+                x.started_at as execution_started_at,x.finished_at as execution_finished_at,
+                x.status as execution_status,x.error_code
+                from public.support_requests r
+                left join public.resolution_drafts d on d.support_request_id=r.id
+                left join public.approval_tasks a on a.resolution_draft_id=d.id
+                left join public.action_executions x on x.support_request_id=r.id
+                where r.id=%s""", (request_id,)).fetchone()
+            if not request:
+                return None
+            events = conn.execute("""select event_type,actor_type,created_at,detail
+                from public.audit_events where resource_type='support_request'
+                and resource_id=%s order by created_at,id""", (str(request_id),)).fetchall()
+        result = self._operational_request(request)
+        timeline = [
+            {"event": event["event_type"], "actor": event["actor_type"],
+             "at": event["created_at"].isoformat(),
+             "detail": safe_audit_detail(event["detail"])}
+            for event in events
+        ]
+        milestones = (
+            ("request_received", request["created_at"]),
+            ("request_enqueued", request["enqueued_at"]),
+            ("resolution_drafted", request["drafted_at"]),
+            ("approval_wait_started", request["approval_created_at"]),
+            (f"approval_{request['approval_status']}", request["decided_at"]),
+            ("execution_started", request["execution_started_at"]),
+            ("request_completed", request["completed_at"]),
+        )
+        timeline.extend({"event": name, "actor": "system", "at": moment.isoformat(), "detail": {}}
+                        for name, moment in milestones if moment)
+        timeline.sort(key=lambda event: event["at"])
+        result["timeline"] = timeline
+        return result
+
     def save_hitl_evaluation(self, report):
         with self.connection() as conn:
             run = conn.execute("""insert into public.evaluation_runs
@@ -1258,6 +1377,7 @@ class InMemoryRepository:
             if existing["payload_hash"] != payload_hash: raise IdempotencyConflictError(idempotency_key)
             return copy.deepcopy(existing), False
         request_id = str(uuid.uuid4())
+        created_at = datetime.now(timezone.utc).isoformat()
         row = {"id": request_id, "reference_number": f"REQ-{1001 + len(self.support_requests)}",
                "user_id": identity.user_id, "conversation_id": session_id,
                "summary": summary, "status": "RECEIVED", "metadata": {"planner": planner},
@@ -1265,7 +1385,8 @@ class InMemoryRepository:
                "workflow_run_id": None, "enqueue_attempts": 0, "enqueued_at": None,
                "next_enqueue_at": datetime.now(timezone.utc).isoformat(), "last_error": None,
                "processing_lease_until": None, "draft_content": None,
-               "proposed_action": None, "approval_status": None}
+               "proposed_action": None, "approval_status": None,
+               "created_at": created_at, "updated_at": created_at, "completed_at": None}
         self.support_requests[request_id] = row; self.request_keys[key] = request_id
         return copy.deepcopy(row), True
     def create_action_proposal(self, action, arguments):
@@ -1309,6 +1430,8 @@ class InMemoryRepository:
                "escalation_at": (now + timedelta(seconds=escalation_seconds)).isoformat(),
                "expires_at": (now + timedelta(seconds=expiry_seconds)).isoformat(),
                "queue_name": "review", "reminded_at": None, "escalated_at": None}
+        row.update({"created_at": now.isoformat(), "updated_at": now.isoformat(),
+                    "approval_created_at": now.isoformat(), "completed_at": None})
         self.support_requests[request_id] = row; self.request_keys[key] = request_id
         proposal["status"] = "confirmed"
         self.audit_events.append({"event_type": "approval_created", "actor_id": identity.user_id,
@@ -1387,6 +1510,10 @@ class InMemoryRepository:
                     "queue_name": "review" if requires_hitl else None,
                     "reminded_at": None, "escalated_at": None,
                     "processing_lease_until": None})
+        row["drafted_at"] = datetime.now(timezone.utc).isoformat()
+        row["updated_at"] = row["drafted_at"]
+        if requires_hitl:
+            row["approval_created_at"] = row["drafted_at"]
         self.audit_events.append({"event_type": ("approval_created" if requires_hitl
                                                    else "resolution_completed_without_review"),
                                   "actor_id": "workflow",
@@ -1454,6 +1581,106 @@ class InMemoryRepository:
             "escalation_precision": round(100 * len(necessary) / len(decided), 1) if decided else None,
         }
 
+    def operational_metrics(self):
+        from support_chatbot.operational import age_seconds
+        rows = list(self.support_requests.values())
+        active = {"RECEIVED", "QUEUED", "DRAFTING", "APPROVED", "EXECUTING"}
+        approvals = [row for row in rows if row.get("approval_status")]
+        pending = [row for row in approvals if row.get("approval_status") == "pending"]
+
+        def elapsed(start, end):
+            if not start or not end:
+                return None
+            return max(0, (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds() * 1000)
+
+        def percentile(values, fraction):
+            values = sorted(value for value in values if value is not None)
+            if not values:
+                return None
+            return round(values[min(round((len(values) - 1) * fraction), len(values) - 1)], 1)
+
+        drafting = [elapsed(row.get("created_at"), row.get("drafted_at") or row.get("updated_at"))
+                    for row in rows if row.get("draft_content")]
+        approval_wait = [elapsed(row.get("approval_created_at") or row.get("updated_at"),
+                                 row.get("decided_at")) for row in approvals]
+        resume = [elapsed(row.get("decided_at"), row.get("execution_started_at")) for row in rows]
+        resolution = [elapsed(row.get("created_at"), row.get("completed_at")) for row in rows]
+        decisions = {}
+        for row in approvals:
+            status = row.get("approval_status")
+            decisions[status] = decisions.get(status, 0) + 1
+        result = {
+            "queue_depth": sum(row["status"] in active for row in rows),
+            "pending_approvals": len(pending),
+            "oldest_pending_approval_seconds": max(
+                (age_seconds(row.get("approval_created_at") or row.get("updated_at")) or 0
+                 for row in pending), default=None),
+            "retry_count": sum(max(row.get("enqueue_attempts", 0) - 1, 0) for row in rows),
+            "dead_letter_count": len(self.dead_letters),
+            "expired_approvals": sum(row.get("approval_status") == "expired" for row in rows),
+            "drafting_p50_ms": percentile(drafting, .5), "drafting_p95_ms": percentile(drafting, .95),
+            "approval_wait_p50_ms": percentile(approval_wait, .5), "approval_wait_p95_ms": percentile(approval_wait, .95),
+            "resume_p50_ms": percentile(resume, .5), "resume_p95_ms": percentile(resume, .95),
+            "resolution_p50_ms": percentile(resolution, .5), "resolution_p95_ms": percentile(resolution, .95),
+            "decision_breakdown": decisions,
+        }
+        result.update(self.hitl_operational_metrics())
+        latest = self.latest_hitl_evaluation() or {}
+        summary = latest.get("summary") or {}
+        result.update({"hitl_recall": summary.get("hitl_recall"),
+                       "hitl_recall_numerator": summary.get("hitl_recall_numerator", 0),
+                       "hitl_recall_denominator": summary.get("hitl_recall_denominator", 0)})
+        return result
+
+    def operational_requests(self, limit=100):
+        return [self._operational_request(row) for row in
+                list(self.support_requests.values())[-limit:][::-1]]
+
+    def _operational_request(self, row):
+        from support_chatbot.operational import explain_state, safe_error_code
+        allowed = {"id", "reference_number", "status", "created_at", "updated_at",
+                   "enqueued_at", "completed_at", "enqueue_attempts", "last_error",
+                   "action_name", "requires_hitl", "routing_reason", "drafted_at",
+                   "approval_status", "approval_created_at", "decided_at", "expires_at",
+                   "execution_started_at", "execution_finished_at", "execution_status",
+                   "error_code", "dead_letters"}
+        result = {key: copy.deepcopy(value) for key, value in row.items() if key in allowed}
+        result["id"] = str(row["id"])
+        result["state_explanation"] = explain_state(row["status"])
+        if result.get("last_error"):
+            result["last_error"] = safe_error_code(result["last_error"])
+        result.setdefault("dead_letters", sum(item["request_id"] == str(row["id"])
+                                              for item in self.dead_letters))
+        return result
+
+    def operational_request_timeline(self, request_id):
+        from support_chatbot.operational import safe_audit_detail
+        row = self.support_requests.get(str(request_id))
+        if not row:
+            return None
+        result = self._operational_request(row)
+        timeline = [
+            {"event": event["event_type"],
+             "actor": ("system" if event.get("actor_id") in {"workflow", "absence-policy"}
+                       else "reviewer"),
+             "at": event.get("created_at"), "detail": safe_audit_detail(event.get("detail"))}
+            for event in self.audit_events if event.get("resource_id") == str(request_id)
+        ]
+        milestones = (
+            ("request_received", row.get("created_at")),
+            ("request_enqueued", row.get("enqueued_at")),
+            ("resolution_drafted", row.get("drafted_at")),
+            ("approval_wait_started", row.get("approval_created_at")),
+            (f"approval_{row.get('approval_status')}", row.get("decided_at")),
+            ("execution_started", row.get("execution_started_at")),
+            ("request_completed", row.get("completed_at")),
+        )
+        timeline.extend({"event": name, "actor": "system", "at": moment, "detail": {}}
+                        for name, moment in milestones if moment)
+        timeline.sort(key=lambda event: event.get("at") or "")
+        result["timeline"] = timeline
+        return result
+
     def save_hitl_evaluation(self, report):
         saved = copy.deepcopy(report)
         saved["run_id"] = str(uuid.uuid4())
@@ -1484,7 +1711,8 @@ class InMemoryRepository:
                         break
         row.update({"status": target, "approval_status": "approved" if approve else "rejected",
                     "decision_reason": reason, "assigned_to": admin_user_id,
-                    "review_necessary": review_necessary})
+                    "review_necessary": review_necessary,
+                    "decided_at": datetime.now(timezone.utc).isoformat()})
         if approve: row["approved_action_hash"] = row.get("action_hash")
         self.audit_events.append({"event_type": "approval_approved" if approve else "approval_rejected",
                                   "actor_id": admin_user_id, "resource_id": str(request_id),
@@ -1513,6 +1741,7 @@ class InMemoryRepository:
             row.setdefault("metadata", {})["customer_status"] = "The approval deadline passed. No action was taken."
             return None
         row["status"] = "EXECUTING"; row["processing_lease_until"] = (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)).isoformat()
+        row["execution_started_at"] = datetime.now(timezone.utc).isoformat()
         return copy.deepcopy(row)
     def complete_execution(self, request_id):
         from support_chatbot.actions import action_hash
@@ -1539,7 +1768,10 @@ class InMemoryRepository:
             order["status"] = "cancelled" if action == "cancel_order" else "return started"
             order["version"] += 1
         self.action_executions[key] = {"status": "succeeded", "response": row.get("draft_content")}
-        if row["status"] == "EXECUTING": row["status"] = "COMPLETED"
+        if row["status"] == "EXECUTING":
+            row["status"] = "COMPLETED"
+            row["completed_at"] = datetime.now(timezone.utc).isoformat()
+            row["execution_finished_at"] = row["completed_at"]
         return copy.deepcopy(row)
     def process_absence_policy(self, now=None):
         reminded, escalated, expired = [], [], []

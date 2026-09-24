@@ -114,7 +114,7 @@ policy or rule, avoid unsupported promises, and give a concrete next step.
     the mobile scenario drawer and composer remain usable.
 39. Open `/monitoring`, submit chat requests in another tab, and verify KPIs,
     traces, tool bars, and runtime health update within five seconds.
-40. Open `/healthz`, `/readyz`, and `/metrics`. Expected: successful responses
+40. Open `/healthz` and `/readyz`, then open `/metrics` as an admin. Expected: successful responses
     without customer message contents in the metrics output.
 
 ## Resetting test state

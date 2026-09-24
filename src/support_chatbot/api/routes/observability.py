@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from support_chatbot import dashboard, evals, hitl_evals, observe
-from support_chatbot.api.dependencies import require_internal_ui, runtime
+from support_chatbot.api.dependencies import require_admin, require_internal_ui, runtime
 from support_chatbot.api.models import ResetRequest
 from support_chatbot.llm import MODEL
 
@@ -33,9 +33,9 @@ def readiness(request: Request):
 
 
 @router.get("/metrics", response_class=PlainTextResponse)
-def metrics():
+def metrics(request: Request, _admin=Depends(require_admin)):
     return PlainTextResponse(
-        observe.prometheus_metrics(),
+        observe.prometheus_metrics(runtime(request).repository.operational_metrics()),
         media_type="text/plain; version=0.0.4",
     )
 

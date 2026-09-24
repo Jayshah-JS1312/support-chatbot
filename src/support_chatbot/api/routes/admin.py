@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from support_chatbot import dashboard, observe
+from support_chatbot.operational import public_events, sanitized_logfile
 from support_chatbot.api.dependencies import require_admin, require_internal_ui, runtime
 from support_chatbot.api.models import ApprovalDecisionRequest, ApprovalReassignRequest
 from support_chatbot.llm import MODEL
@@ -55,7 +56,9 @@ def monitoring_data(request: Request, _=Depends(require_internal_ui)):
     app_runtime = runtime(request)
     return {
         "stats": observe.stats(),
-        "events": observe.recent(120),
+        "events": public_events(observe.recent(120)),
+        "operations": app_runtime.repository.operational_metrics(),
+        "requests": app_runtime.repository.operational_requests(100),
         "runtime": {
             "status": "operational",
             "uptime_seconds": round(time.time() - app_runtime.started_at),
@@ -65,12 +68,18 @@ def monitoring_data(request: Request, _=Depends(require_internal_ui)):
     }
 
 
+@router.get("/admin/operations/requests/{request_id}.json")
+def operational_request_detail(request_id: str, request: Request,
+                               _=Depends(require_internal_ui)):
+    result = runtime(request).repository.operational_request_timeline(request_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Operational request not found")
+    return result
+
+
 @router.get("/trace.jsonl", response_class=PlainTextResponse)
 def trace_log(_=Depends(require_internal_ui)):
-    try:
-        return PlainTextResponse(observe.LOGFILE.read_text())
-    except OSError:
-        return PlainTextResponse("")
+    return PlainTextResponse(sanitized_logfile(observe.LOGFILE))
 
 
 @router.post("/admin/requests/{request_id}/decision")

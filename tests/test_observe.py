@@ -211,6 +211,17 @@ class TestStats:
         assert "support_agent_turn_latency_p95_ms 100" in metrics
         assert "private customer text" not in metrics
 
+    def test_prometheus_metrics_include_durable_operations(self, tmp_state):
+        metrics = observe.prometheus_metrics({
+            "queue_depth": 3, "pending_approvals": 2,
+            "oldest_pending_approval_seconds": 45, "retry_count": 4,
+            "dead_letter_count": 1, "expired_approvals": 2,
+            "hitl_recall": 100.0, "escalation_precision": 75.0,
+        })
+        assert "support_agent_queue_depth 3" in metrics
+        assert "support_agent_hitl_recall_percent 100.0" in metrics
+        assert "support_agent_escalation_precision_percent 75.0" in metrics
+
 
 class TestRecent:
     """recent() returns the most recent events."""

@@ -174,7 +174,7 @@ def stats():
     }
 
 
-def prometheus_metrics():
+def prometheus_metrics(operations=None):
     """Return aggregate, low-cardinality metrics in Prometheus text format."""
     snapshot = stats()
     lines = [
@@ -203,4 +203,18 @@ def prometheus_metrics():
         "# TYPE support_agent_turn_latency_p95_ms gauge",
         f"support_agent_turn_latency_p95_ms {snapshot['turn_p95_ms']}",
     ]
+    if operations:
+        gauges = {
+            "support_agent_queue_depth": operations.get("queue_depth"),
+            "support_agent_pending_approvals": operations.get("pending_approvals"),
+            "support_agent_oldest_pending_approval_seconds": operations.get("oldest_pending_approval_seconds"),
+            "support_agent_workflow_retries_total": operations.get("retry_count"),
+            "support_agent_dead_letters_total": operations.get("dead_letter_count"),
+            "support_agent_expired_approvals_total": operations.get("expired_approvals"),
+            "support_agent_hitl_recall_percent": operations.get("hitl_recall"),
+            "support_agent_escalation_precision_percent": operations.get("escalation_precision"),
+        }
+        for name, value in gauges.items():
+            if value is not None:
+                lines.extend((f"# TYPE {name} gauge", f"{name} {value}"))
     return "\n".join(lines) + "\n"

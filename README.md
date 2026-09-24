@@ -32,6 +32,8 @@ baseline.
 - End-to-end idempotency for submissions, deliveries, and action execution
 - Cryptographically sealed cancellation/return proposals with optimistic revalidation
 - Operations dashboard plus health, readiness, and Prometheus metrics endpoints
+- Durable queue, staged-latency, decision, HITL-quality, and redacted
+  per-request audit views for operators
 - Deterministic retrieval-evaluation dashboard with versioned test cases
 - Admin-only HITL evaluation dashboard with recall, reviewer-labelled precision,
   false-positive/negative inspection, queue health, and a 100% recall release gate
@@ -86,8 +88,8 @@ enabled, the monitoring console is at <http://127.0.0.1:8000/monitoring>.
 The retrieval evaluation dashboard is at <http://127.0.0.1:8000/evals>.
 The HITL safety dashboard is at <http://127.0.0.1:8000/admin/hitl-evals>.
 The admin approval inbox is at <http://127.0.0.1:8000/admin/approvals>.
-Internal traces can contain customer text, so put that route behind operator
-authentication in production.
+Monitoring and trace routes require operator authentication, and payloads are
+redacted server-side before they reach the browser or trace download.
 
 Local demo sign-in accounts are:
 
@@ -136,7 +138,7 @@ The pre-migration retrieval measurements are recorded in
 docker compose up --build
 curl http://localhost:8000/healthz
 curl http://localhost:8000/readyz
-curl http://localhost:8000/metrics
+curl --cookie "ami_auth=<admin-session-token>" http://localhost:8000/metrics
 ```
 
 Read [deployment](docs/deployment.md), [architecture](docs/architecture.md),
