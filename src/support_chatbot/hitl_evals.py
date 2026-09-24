@@ -1,9 +1,9 @@
 """Deterministic HITL safety evaluation and release gate.
 
-The current operations policy deliberately routes every submitted support
-request to a reviewer. That gives required-human cases perfect recall while
-also creating false-positive escalations. Reporting both values prevents the
-recall number from concealing that cost.
+The deployed policy routes validated structured actions, not free-form text.
+Safe reads and deterministic denials bypass review; privileged and unknown
+actions fail closed. Recall and precision are still reported together so a
+future policy cannot hide safety loss behind queue-efficiency gains.
 """
 
 import argparse
@@ -11,10 +11,11 @@ import json
 from datetime import datetime, timezone
 
 from support_chatbot import PACKAGE_ROOT
+from support_chatbot.hitl_policy import classify_action
 
 
 CASES_FILE = PACKAGE_ROOT / "evaluation" / "hitl.json"
-ROUTING_POLICY = "review_all"
+ROUTING_POLICY = "structured_action_v1"
 
 
 def percent(numerator, denominator):
@@ -22,9 +23,8 @@ def percent(numerator, denominator):
 
 
 def route_requires_hitl(case):
-    """Mirror the deployed workflow policy: every submitted request pauses."""
-    del case
-    return True
+    """Use the same deterministic action policy as the deployed workflow."""
+    return classify_action(case["expected_action"]).requires_hitl
 
 
 def load_cases(path=CASES_FILE):

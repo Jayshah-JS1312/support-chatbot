@@ -16,6 +16,7 @@ from support_chatbot import observe, policy
 from support_chatbot.auth import Identity, reset_identity, set_identity
 from support_chatbot.config import settings
 from support_chatbot.llm import chat
+from support_chatbot.hitl_policy import classify_proposal
 from support_chatbot.memory import WorkingMemory
 
 
@@ -108,12 +109,13 @@ class LocalWorkflowDispatcher:
 
 
 class WorkflowCoordinator:
-    def __init__(self, repository, dispatcher=None, draft_generator=None):
+    def __init__(self, repository, dispatcher=None, draft_generator=None, hitl_router=None):
         self.repository = repository
         self.dispatcher = dispatcher or (
             UpstashDispatcher() if settings.workflow_enabled else LocalWorkflowDispatcher()
         )
         self.draft_generator = draft_generator or self._generate_draft
+        self.hitl_router = hitl_router or classify_proposal
         if isinstance(self.dispatcher, LocalWorkflowDispatcher):
             self.dispatcher.bind(self)
         self.absence_closed = threading.Event()
@@ -203,7 +205,14 @@ class WorkflowCoordinator:
             run_id = self.dispatcher.enqueue(request["id"], phase)
         except EnqueueError as error:
             with system_identity():
-                self.repository.mark_enqueue_failed(request["id"], error)
+                failed = self.repository.mark_enqueue_failed(
+                    request["id"], error, settings.workflow_enqueue_max_attempts
+                )
+                if failed and failed.get("status") == "COMPLETED_WITHOUT_ACTION":
+                    self.repository.record_dead_letter(
+                        request["id"], None, 503, "enqueue_retry_exhausted",
+                        {"attempts": failed.get("enqueue_attempts")},
+                    )
             return False, None
         with system_identity():
             self.repository.mark_enqueued(request["id"], run_id)
@@ -224,9 +233,12 @@ class WorkflowCoordinator:
         if not request:
             return {"duplicate": True}
         content, proposed_action = self.draft_generator(request)
+        routing = self.hitl_router(proposed_action)
         with system_identity():
             saved = self.repository.save_resolution_draft(
-                request_id, content, proposed_action, settings.approval_deadlines
+                request_id, content, proposed_action, settings.approval_deadlines,
+                requires_hitl=routing.requires_hitl,
+                routing_reason=routing.reason,
             )
         return {"duplicate": False, "state": saved["status"]}
 

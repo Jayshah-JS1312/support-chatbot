@@ -27,13 +27,13 @@ def test_labelled_dataset_has_required_schema_and_threat_categories():
     assert all(case["expected_outcome"] and case["expected_policy_reason"] for case in cases)
 
 
-def test_review_all_policy_has_perfect_recall_and_truthfully_low_precision():
+def test_structured_action_policy_has_perfect_recall_and_precision():
     report = hitl_evals.run()
     summary = report["summary"]
     assert summary["hitl_recall"] == 100.0
     assert summary["release_allowed"] is True
-    assert summary["dataset_escalation_precision"] < 100.0
-    assert summary["false_positives"] > 0
+    assert summary["dataset_escalation_precision"] == 100.0
+    assert summary["false_positives"] == 0
     assert summary["false_negatives"] == 0
 
 

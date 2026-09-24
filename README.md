@@ -35,6 +35,9 @@ baseline.
 - Deterministic retrieval-evaluation dashboard with versioned test cases
 - Admin-only HITL evaluation dashboard with recall, reviewer-labelled precision,
   false-positive/negative inspection, queue health, and a 100% recall release gate
+- Deterministic structured-action routing: safe reads and refusals complete
+  automatically; privileged, irreversible, and unknown actions fail closed
+- Four-wall regression coverage for latency, absence, regression, and tenant isolation
 - Deterministic unit tests and opt-in live LLM evaluations
 
 The commerce workflows use durable local PostgreSQL records, but they still
@@ -119,9 +122,10 @@ therefore intentionally excluded from default CI.
 
 The deterministic HITL command is a release gate: it exits non-zero unless
 every blocking case that requires a human actually pauses. Its dashboard always
-shows recall beside escalation precision. The current `review_all` policy has
-100% recall but intentionally exposes low dataset precision because safe reads
-are also escalated; operational precision comes from real reviewer labels.
+shows recall beside escalation precision. Routing is performed at the structured
+action boundary rather than from free-form customer text: approved read-only
+actions and deterministic denials skip the queue, privileged actions pause, and
+unknown actions fail closed. Operational precision comes from real reviewer labels.
 
 The pre-migration retrieval measurements are recorded in
 [`docs/baselines/retrieval-evaluation.md`](docs/baselines/retrieval-evaluation.md).

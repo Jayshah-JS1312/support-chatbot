@@ -11,6 +11,7 @@ from support_chatbot.auth import Identity, reset_identity, set_identity
 from support_chatbot.persistence import IdempotencyConflictError, get_repository
 from support_chatbot.workflow import EnqueueError, LocalWorkflowDispatcher, WorkflowCoordinator
 from support_chatbot.config import settings
+from support_chatbot.hitl_policy import RoutingDecision
 from support_chatbot import workflow as workflow_module
 
 
@@ -37,7 +38,10 @@ def workflow_setup():
         drafts.append(request["id"])
         return "Proposed safe response", {"type": "send_resolution"}
 
-    coordinator = WorkflowCoordinator(repository, dispatcher, generate)
+    coordinator = WorkflowCoordinator(
+        repository, dispatcher, generate,
+        hitl_router=lambda proposal: RoutingDecision(True, "fixture_requires_review"),
+    )
     runtime = RuntimeState(repository, coordinator)
     with TestClient(create_app(runtime)) as client:
         assert client.post("/auth/login", json={
@@ -147,7 +151,8 @@ def test_local_dispatcher_processes_without_upstash():
         assert isinstance(coordinator.dispatcher, LocalWorkflowDispatcher)
         assert coordinator.enqueue(request)[0] is True
         coordinator.dispatcher.messages.join()
-        assert repository.support_requests[request["id"]]["status"] == "AWAITING_APPROVAL"
+        assert repository.support_requests[request["id"]]["status"] == "COMPLETED"
+        assert repository.support_requests[request["id"]]["approval_status"] is None
     finally:
         coordinator.close()
 

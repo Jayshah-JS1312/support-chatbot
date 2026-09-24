@@ -1,0 +1,32 @@
+name: Release evaluations
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  blocking-and-live-evaluations:
+    runs-on: ubuntu-latest
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+      MODEL: ${{ vars.MODEL || 'gpt-4o-mini' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e '.[dev]'
+      - name: Blocking HITL safety gate
+        run: python -m support_chatbot.hitl_evals --check
+      - name: Audit model-judge fixtures
+        run: python -m evaluations.golden --audit
+      - name: Live behavioral evaluation
+        run: python -m evaluations.behavioral --runs 1
+      - name: Live model-judged evaluation
+        run: python -m evaluations.golden

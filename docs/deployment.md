@@ -43,6 +43,8 @@ deployment unless the route is protected by operator authentication.
 | `SUPPORT_CHATBOT_APPROVAL_EXPIRY_SECONDS` | Final fail-closed deadline | `86400` |
 | `SUPPORT_CHATBOT_ABSENCE_SCAN_SECONDS` | Durable absence-policy sweep interval | `15` |
 | `SUPPORT_CHATBOT_ABSENCE_DEMO_MODE` | Override deadlines with 60s/120s/300s | `false` |
+| `SUPPORT_CHATBOT_MODEL_TIMEOUT_SECONDS` | Provider request deadline | `30` |
+| `SUPPORT_CHATBOT_WORKFLOW_ENQUEUE_MAX_ATTEMPTS` | Fail-closed queue publish limit | `5` |
 
 ## Runtime endpoints
 

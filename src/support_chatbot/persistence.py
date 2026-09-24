@@ -503,16 +503,21 @@ class PostgresRepository:
             ).fetchone()
         return self._workflow_request(row)
 
-    def mark_enqueue_failed(self, request_id, error):
+    def mark_enqueue_failed(self, request_id, error, max_attempts=5):
         with self.connection() as conn:
             row = conn.execute(
                 """update public.support_requests set enqueue_attempts=enqueue_attempts+1,
                 next_enqueue_at=now() + make_interval(
                   secs => least(300, power(2, least(enqueue_attempts, 8))::int)
                 ),
+                status=case when enqueue_attempts+1 >= %s then 'COMPLETED_WITHOUT_ACTION' else status end,
+                completed_at=case when enqueue_attempts+1 >= %s then now() else completed_at end,
+                metadata=case when enqueue_attempts+1 >= %s then metadata ||
+                  '{"customer_status":"We could not start this request after repeated attempts. No action was taken."}'::jsonb
+                  else metadata end,
                 last_error=%s,updated_at=now() where id=%s
                 and status in ('RECEIVED','APPROVED') returning *""",
-                (str(error)[:500], request_id),
+                (max_attempts, max_attempts, max_attempts, str(error)[:500], request_id),
             ).fetchone()
         return self._workflow_request(row)
 
@@ -536,7 +541,8 @@ class PostgresRepository:
             ).fetchone()
         return self._workflow_request(row)
 
-    def save_resolution_draft(self, request_id, content, proposed_action, approval_deadlines):
+    def save_resolution_draft(self, request_id, content, proposed_action, approval_deadlines,
+                              requires_hitl=True, routing_reason=None):
         with self.connection() as conn:
             request = conn.execute(
                 "select * from public.support_requests where id=%s for update", (request_id,)
@@ -556,9 +562,9 @@ class PostgresRepository:
                 """insert into public.resolution_drafts
                 (support_request_id,content,proposed_action,status,action_name,
                  action_arguments,customer_consequences,policy_evidence,order_version,
-                 action_hash,customer_confirmed_at)
-                values(%s,%s,%s,'pending_approval',%s,%s,%s,%s,%s,%s,
-                  case when %s then now() else null end)
+                 action_hash,customer_confirmed_at,requires_hitl,routing_reason)
+                values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                  case when %s then now() else null end,%s,%s)
                 on conflict(support_request_id) do update set
                 content=excluded.content,proposed_action=excluded.proposed_action,
                 action_name=excluded.action_name,action_arguments=excluded.action_arguments,
@@ -566,44 +572,58 @@ class PostgresRepository:
                 policy_evidence=excluded.policy_evidence,order_version=excluded.order_version,
                 action_hash=excluded.action_hash,
                 customer_confirmed_at=excluded.customer_confirmed_at,
-                status='pending_approval',version=resolution_drafts.version+1,updated_at=now()
+                requires_hitl=excluded.requires_hitl,routing_reason=excluded.routing_reason,
+                status=excluded.status,version=resolution_drafts.version+1,updated_at=now()
                 returning id""", (
-                    request_id, content, Jsonb(proposed_action), action_name,
+                    request_id, content, Jsonb(proposed_action),
+                    "pending_approval" if requires_hitl else "completed", action_name,
                     Jsonb(arguments), Jsonb(proposed_action.get("customer_consequences") or {}),
                     Jsonb(proposed_action.get("policy_evidence") or {}),
                     proposed_action.get("order_version"), proposed_action.get("action_hash"),
                     bool(proposed_action.get("customer_confirmed")),
+                    requires_hitl, routing_reason,
                 ),
             ).fetchone()
-            reminder_seconds, escalation_seconds, expiry_seconds = approval_deadlines
-            conn.execute(
-                """insert into public.approval_tasks
-                (resolution_draft_id,status,reminder_at,escalation_at,expires_at)
-                values(%s,'pending',now()+make_interval(secs => %s),
-                now()+make_interval(secs => %s),now()+make_interval(secs => %s))
-                on conflict(resolution_draft_id) do update set status='pending',
-                reminder_at=excluded.reminder_at,reminded_at=null,
-                escalation_at=excluded.escalation_at,escalated_at=null,
-                expires_at=excluded.expires_at,queue_name='review',
-                decision_reason=null,decided_at=null""",
-                (draft["id"], reminder_seconds, escalation_seconds, expiry_seconds),
-            )
-            conn.execute("""insert into public.audit_events
-                (user_id,actor_type,actor_id,event_type,resource_type,resource_id,request_id,detail)
-                values(%s,'system','workflow','approval_created','support_request',%s,%s,%s)""",
-                (request["user_id"], str(request_id), str(request_id), Jsonb({
+            if requires_hitl:
+                reminder_seconds, escalation_seconds, expiry_seconds = approval_deadlines
+                conn.execute(
+                    """insert into public.approval_tasks
+                    (resolution_draft_id,status,reminder_at,escalation_at,expires_at)
+                    values(%s,'pending',now()+make_interval(secs => %s),
+                    now()+make_interval(secs => %s),now()+make_interval(secs => %s))
+                    on conflict(resolution_draft_id) do update set status='pending',
+                    reminder_at=excluded.reminder_at,reminded_at=null,
+                    escalation_at=excluded.escalation_at,escalated_at=null,
+                    expires_at=excluded.expires_at,queue_name='review',
+                    decision_reason=null,decided_at=null""",
+                    (draft["id"], reminder_seconds, escalation_seconds, expiry_seconds),
+                )
+                audit_type = "approval_created"
+                audit_detail = {
                     "draft_id": str(draft["id"]), "action": action_name,
+                    "routing_reason": routing_reason,
                     "deadlines_seconds": {
                         "reminder": reminder_seconds,
                         "escalation": escalation_seconds,
                         "expiry": expiry_seconds,
                     },
-                })),)
+                }
+            else:
+                audit_type = "resolution_completed_without_review"
+                audit_detail = {"draft_id": str(draft["id"]), "action": action_name,
+                                "routing_reason": routing_reason}
+            conn.execute("""insert into public.audit_events
+                (user_id,actor_type,actor_id,event_type,resource_type,resource_id,request_id,detail)
+                values(%s,'system','workflow',%s,'support_request',%s,%s,%s)""",
+                (request["user_id"], audit_type, str(request_id), str(request_id),
+                 Jsonb(audit_detail)),)
             row = conn.execute(
-                """update public.support_requests set status='AWAITING_APPROVAL',order_id=coalesce(%s,order_id),
+                """update public.support_requests set status=%s,order_id=coalesce(%s,order_id),
+                completed_at=case when %s then null else now() end,
                 processing_lease_until=null,updated_at=now() where id=%s
                 and status='DRAFTING' returning *""",
-                (order["id"] if order else None, request_id),
+                ("AWAITING_APPROVAL" if requires_hitl else "COMPLETED",
+                 order["id"] if order else None, requires_hitl, request_id),
             ).fetchone()
         return self._workflow_request(row)
 
@@ -1320,11 +1340,17 @@ class InMemoryRepository:
         if row["status"] == "RECEIVED": row["status"] = "QUEUED"
         row["workflow_run_id"] = workflow_run_id; row["enqueued_at"] = datetime.now(timezone.utc).isoformat(); row["last_error"] = None
         return copy.deepcopy(row)
-    def mark_enqueue_failed(self, request_id, error):
+    def mark_enqueue_failed(self, request_id, error, max_attempts=5):
         row = self.support_requests.get(str(request_id))
         if not row: return None
         row["enqueue_attempts"] += 1; row["last_error"] = str(error)[:500]
         row["next_enqueue_at"] = datetime.now(timezone.utc).isoformat()
+        if row["enqueue_attempts"] >= max_attempts:
+            row["status"] = "COMPLETED_WITHOUT_ACTION"
+            row["completed_at"] = datetime.now(timezone.utc).isoformat()
+            row.setdefault("metadata", {})["customer_status"] = (
+                "We could not start this request after repeated attempts. No action was taken."
+            )
         return copy.deepcopy(row)
     def pending_enqueues(self, limit=100):
         return [copy.deepcopy(row) for row in self.support_requests.values()
@@ -1334,14 +1360,17 @@ class InMemoryRepository:
         if not row or row["status"] not in {"RECEIVED", "QUEUED"}: return None
         row["status"] = "DRAFTING"; row["processing_lease_until"] = (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)).isoformat()
         return copy.deepcopy(row)
-    def save_resolution_draft(self, request_id, content, proposed_action, approval_deadlines):
+    def save_resolution_draft(self, request_id, content, proposed_action, approval_deadlines,
+                              requires_hitl=True, routing_reason=None):
         row = self.support_requests.get(str(request_id))
         if not row or row["status"] != "DRAFTING": return None
         proposed_action = proposed_action or {"type": "send_resolution"}
         reminder_seconds, escalation_seconds, expiry_seconds = approval_deadlines
         now = datetime.now(timezone.utc)
-        row.update({"status": "AWAITING_APPROVAL", "draft_content": content,
-                    "proposed_action": copy.deepcopy(proposed_action), "approval_status": "pending",
+        row.update({"status": "AWAITING_APPROVAL" if requires_hitl else "COMPLETED",
+                    "draft_content": content,
+                    "proposed_action": copy.deepcopy(proposed_action),
+                    "approval_status": "pending" if requires_hitl else None,
                     "action_name": proposed_action.get("type", "send_resolution"),
                     "action_arguments": copy.deepcopy(proposed_action.get("arguments") or {}),
                     "customer_consequences": copy.deepcopy(proposed_action.get("customer_consequences") or {}),
@@ -1353,16 +1382,22 @@ class InMemoryRepository:
                     "reminder_at": (now + timedelta(seconds=reminder_seconds)).isoformat(),
                     "escalation_at": (now + timedelta(seconds=escalation_seconds)).isoformat(),
                     "expires_at": (now + timedelta(seconds=expiry_seconds)).isoformat(),
-                    "queue_name": "review", "reminded_at": None, "escalated_at": None,
+                    "requires_hitl": requires_hitl, "routing_reason": routing_reason,
+                    "completed_at": (None if requires_hitl else datetime.now(timezone.utc).isoformat()),
+                    "queue_name": "review" if requires_hitl else None,
+                    "reminded_at": None, "escalated_at": None,
                     "processing_lease_until": None})
-        self.audit_events.append({"event_type": "approval_created", "actor_id": "workflow",
+        self.audit_events.append({"event_type": ("approval_created" if requires_hitl
+                                                   else "resolution_completed_without_review"),
+                                  "actor_id": "workflow",
                                   "resource_id": str(request_id),
                                   "detail": {"action": row["action_name"],
+                                             "routing_reason": routing_reason,
                                              "deadlines_seconds": {
                                                  "reminder": reminder_seconds,
                                                  "escalation": escalation_seconds,
                                                  "expiry": expiry_seconds,
-                                             }},
+                                             } if requires_hitl else {}},
                                   "created_at": datetime.now(timezone.utc).isoformat()})
         return copy.deepcopy(row)
     def list_approval_tasks(self, status="pending"):
@@ -1565,7 +1600,16 @@ class InMemoryRepository:
         for key, values in (("sessions", [session_id]), ("orders_discussed", list(work.get("orders", {}))), ("actions", work.get("actions", [])), ("escalations", [work["escalation"]] if work.get("escalation") else [])):
             rec[key].extend(value for value in values if value not in rec[key])
         rec["refusals"] = max(rec["refusals"], len(work.get("failures", [])))
-    def recall(self, email): return copy.deepcopy(self.memories.get((email or "").lower()))
+    def recall(self, email):
+        normalized = (email or "").lower()
+        if self.enforce_auth:
+            identity = current_identity()
+            profile = self.profiles.get(normalized)
+            if not identity or not profile or (
+                identity.role != "admin" and identity.user_id != profile["id"]
+            ):
+                return None
+        return copy.deepcopy(self.memories.get(normalized))
     def save_feedback(self, entry): self.feedback.append(copy.deepcopy(entry))
 
 

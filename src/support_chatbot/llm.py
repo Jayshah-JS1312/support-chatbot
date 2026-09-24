@@ -12,6 +12,7 @@ from openai import OpenAI, RateLimitError
 
 from support_chatbot import observe
 from support_chatbot import pricing
+from support_chatbot.config import settings
 
 load_dotenv()
 
@@ -31,7 +32,12 @@ def client():
                 "OPENAI_API_KEY and OPENAI_BASE_URL must be configured before "
                 "making a model request. Copy .env.example to .env."
             )
-        _client = OpenAI(api_key=api_key, base_url=base_url)
+        _client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=settings.model_timeout_seconds,
+            max_retries=0,
+        )
     return _client
 
 
