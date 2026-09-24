@@ -3,7 +3,7 @@
 from fastapi import HTTPException, Request, Response
 
 from support_chatbot.config import settings
-from support_chatbot.api.auth_middleware import AUTH_COOKIE
+from support_chatbot.api.auth_middleware import ADMIN_AUTH_COOKIE, CUSTOMER_AUTH_COOKIE
 
 
 def runtime(request: Request):
@@ -50,9 +50,10 @@ def require_internal_ui(request: Request):
     return user
 
 
-def set_auth_cookie(response, token):
+def set_role_auth_cookie(response, token, role):
+    cookie_name = ADMIN_AUTH_COOKIE if role == "admin" else CUSTOMER_AUTH_COOKIE
     response.set_cookie(
-        AUTH_COOKIE,
+        cookie_name,
         token,
         max_age=settings.auth_session_hours * 3600,
         path="/",
@@ -64,6 +65,8 @@ def set_auth_cookie(response, token):
 
 def session(request: Request, response: Response):
     user = require_customer(request)
-    context = runtime(request).get_session(request.cookies.get("sid"), user.user_id)
+    context = runtime(request).get_session(
+        request.cookies.get("sid"), user.user_id, user.email
+    )
     set_session_cookie(response, context)
     return context

@@ -55,7 +55,7 @@
 <dialog id="requestDialog"><div class="dialog-head"><strong id="dialogTitle">Request timeline</strong><button onclick="$('requestDialog').close()">Close</button></div><div class="state-note" id="dialogState"></div><ol class="timeline" id="timeline"></ol></dialog>
 <script>
 const $=id=>document.getElementById(id),esc=value=>String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');let events=[];
-async function logout(){try{await fetch('/auth/logout',{method:'POST'})}finally{location.href='/login'}}
+async function logout(){try{await fetch('/auth/logout?role=admin',{method:'POST'})}finally{location.href='/login?role=admin'}}
 const usd=n=>n>=1?'$'+n.toFixed(2):n>=.01?'$'+n.toFixed(3):'$'+n.toFixed(5),duration=s=>{const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h?h+'h '+m+'m':m?m+'m':s+'s'};
 const latency=ms=>ms==null?'—':ms<1000?Math.round(ms)+'ms':ms<60000?(ms/1000).toFixed(1)+'s':duration(Math.round(ms/1000));
 function kpi(label,value,sub,warn=false){return `<article class="kpi${warn?' warn':''}"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="sub">${esc(sub)}</div></article>`}

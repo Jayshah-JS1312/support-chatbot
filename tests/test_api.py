@@ -200,6 +200,37 @@ def test_reset_clears_the_current_conversation(api_client):
     assert response.json()["transcript"] == []
 
 
+def test_new_conversation_preserves_old_thread_and_can_restore_it(api_client):
+    client, _ = api_client
+    client.get("/")
+    old_id = client.get("/state").json()["conversation_id"]
+    client.post(
+        "/chat", json={"message": "Keep this old chat", "planner": "react"},
+        headers={"Idempotency-Key": "preserve-old-thread"},
+    )
+
+    created = client.post("/conversations")
+    assert created.status_code == 201
+    assert created.json()["conversation_id"] != old_id
+    history = client.get("/conversations").json()["items"]
+    assert any(item["conversation_id"] == old_id and
+               item["title"] == "Keep this old chat" for item in history)
+
+    restored = client.post(f"/conversations/{old_id}/activate")
+    assert restored.status_code == 200
+    assert restored.json()["transcript"][0]["content"] == "Keep this old chat"
+
+
+def test_customer_page_has_identity_quick_actions_history_and_ticket_notifications(api_client):
+    client, _ = api_client
+    page = client.get("/").text
+    for text in ("Quick actions", "Track a package", "Cancel an order",
+                 "Return an order", "Your conversations", "welcomeName"):
+        assert text in page
+    assert "updateTicketNotice" in page
+    assert "document.title=`${copy[0]} · Ami Support`" in page
+
+
 def test_feedback_is_validated_and_persisted(api_client):
     client, runtime = api_client
 

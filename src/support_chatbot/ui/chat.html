@@ -19,7 +19,7 @@
     button,textarea,select { font:inherit; } button,select { min-height:40px; } button { cursor:pointer; }
     button:focus-visible,textarea:focus-visible,select:focus-visible,a:focus-visible,summary:focus-visible {
       outline:3px solid rgba(255,176,32,.35); outline-offset:2px; }
-    .shell { display:grid; grid-template-columns:minmax(0,1fr);
+    .shell { display:grid; grid-template-columns:280px minmax(0,1fr);
       grid-template-rows:minmax(0,1fr); width:100%; height:100vh; height:100dvh;
       min-height:0; overflow:hidden; }
     .sidebar,.inspector { background:var(--surface); min-width:0; }
@@ -46,6 +46,12 @@
     .nav-link { display:flex; align-items:center; justify-content:space-between; color:var(--muted);
       text-decoration:none; padding:10px 11px; border-radius:10px; }
     .nav-link:hover { color:var(--text); background:var(--surface-2); }
+    .conversation-list { display:grid; gap:4px; margin:0 4px 18px; }
+    .conversation-link { width:100%; min-height:unset; padding:9px 10px; border:1px solid transparent;
+      border-radius:9px; color:var(--muted); background:transparent; text-align:left; overflow:hidden;
+      white-space:nowrap; text-overflow:ellipsis; }
+    .conversation-link:hover,.conversation-link.active { color:var(--text); background:var(--surface-2); border-color:var(--line); }
+    .conversation-empty { padding:8px 10px; color:var(--muted); font-size:11px; }
     .chat-column { width:100%; height:100%; min-width:0; min-height:0; overflow:hidden;
       display:flex; flex-direction:column; background:var(--canvas); }
     .topbar { flex:0 0 auto; min-height:72px; padding:14px 22px; display:flex; align-items:center; gap:14px;
@@ -71,6 +77,8 @@
     .ticket-notice.failed { border-color:#60363b; background:#241316; color:#ffc0c6; }
     .ticket-notice strong { display:block; font-size:12px; }
     .ticket-notice span { display:block; opacity:.78; font-size:11px; }
+    .ticket-notice.updated { animation:ticket-update .7s ease; }
+    @keyframes ticket-update { 50% { border-color:var(--accent); transform:translateY(-1px); } }
     .ticket-icon { display:grid; place-items:center; width:22px; height:22px; flex:0 0 auto;
       border-radius:50%; background:rgba(255,176,32,.15); font-weight:800; }
     #activity { flex:0 1 auto; max-height:min(24vh,180px); padding:0 24px; overflow-y:auto;
@@ -162,7 +170,7 @@
     .feedback button { width:100%; margin-top:8px; color:var(--text); background:var(--surface-3); border:1px solid var(--line); border-radius:9px; }
     #feedbackStatus { min-height:18px; color:var(--muted); font-size:11px; margin-top:6px; }
     .mobile-menu { display:none; }
-    @media (max-width:1100px) { .shell { grid-template-columns:minmax(0,1fr); } }
+    @media (max-width:1100px) and (min-width:761px) { .shell { grid-template-columns:240px minmax(0,1fr); } }
     @media (max-width:760px) {
       .shell { display:block; height:100vh; height:100dvh; }
       .sidebar { position:fixed; z-index:20; inset:0 auto 0 0; width:min(84vw,300px);
@@ -181,15 +189,29 @@
 </head>
 <body>
 <main class="shell">
+  <aside class="sidebar" aria-label="Customer workspace">
+    <div class="brand"><div class="brand-mark">A</div><div><strong>Ami Support</strong><span id="customerIdentity">Customer support</span></div></div>
+    <div class="sidebar-content">
+      <div class="eyebrow">Quick actions</div>
+      <button class="quick" data-prompt="List all of my current orders"><b>Order status</b><span>See all your current orders</span></button>
+      <button class="quick" data-prompt="Track my package"><b>Track a package</b><span>Check delivery progress</span></button>
+      <button class="quick" data-prompt="I want to cancel an order"><b>Cancel an order</b><span>Review eligibility and consequences</span></button>
+      <button class="quick" data-prompt="I want to return an order"><b>Return an order</b><span>Start an eligible return</span></button>
+      <div class="eyebrow">Your conversations</div>
+      <div class="conversation-list" id="conversationList"><div class="conversation-empty">Loading conversations…</div></div>
+    </div>
+    <div class="sidebar-footer"><button class="quick" type="button" onclick="newConversation()"><b>＋ New conversation</b></button></div>
+  </aside>
   <section class="chat-column" aria-label="Support conversation">
     <header class="topbar">
+      <button class="secondary mobile-menu" type="button" aria-label="Open conversations" onclick="document.body.classList.toggle('menu-open')">☰</button>
       <div class="agent-avatar" aria-hidden="true">A</div>
-      <div class="agent-title"><strong>Ami</strong><span>Online · Amazon customer support</span></div>
+      <div class="agent-title"><strong id="welcomeName">Ami</strong><span>Online · Amazon customer support</span></div>
       <div class="top-actions">
         <label><span style="position:absolute;clip:rect(0,0,0,0)">Planning mode</span>
           <select id="planner" class="planner" title="Planning strategy"><option value="react">Adaptive reasoning</option><option value="plan">Plan then execute</option></select>
         </label>
-        <button class="secondary" type="button" onclick="resetConversation()">New conversation</button>
+        <button class="secondary" type="button" onclick="newConversation()">New conversation</button>
         <button class="secondary" type="button" onclick="logout()">Logout</button>
       </div>
     </header>
@@ -197,10 +219,10 @@
     <div id="activity" aria-live="polite"></div>
     <div id="chat" role="log" aria-live="polite" aria-label="Conversation messages" tabindex="0">
       <section class="welcome" id="welcome">
-        <div class="welcome-icon" aria-hidden="true">✦</div><h1>How can I help today?</h1>
+        <div class="welcome-icon" aria-hidden="true">✦</div><h1 id="welcomeHeading">How can I help today?</h1>
         <p>I can find orders, track deliveries, explain policies, start returns, cancel eligible orders, or connect you with a person.</p>
         <div class="suggestions">
-          <button class="suggestion" data-prompt="I don't know my order number. My email is raj@example.com"><b>Find my orders</b><span>Use a demo customer email</span></button>
+          <button class="suggestion" data-prompt="List all of my current orders"><b>Find my orders</b><span>Use your signed-in account</span></button>
           <button class="suggestion" data-prompt="How long do I have to return something?"><b>Check the return policy</b><span>Ask a knowledge question</span></button>
           <button class="suggestion" data-prompt="Where is order 112-2222222-2222222?"><b>Track a delivery</b><span>Use a demo order</span></button>
           <button class="suggestion" data-prompt="My package arrived damaged. What happens next?"><b>Report a problem</b><span>Review available options</span></button>
@@ -233,7 +255,7 @@ const STATE_COPY={
   EXPIRED:['Expired','Human approval did not arrive before the deadline. No action was taken.'],
   COMPLETED_WITHOUT_ACTION:['Not completed','The request closed safely without performing the proposed action.']
 };
-let lastAgentResponse='',sending=false;
+let lastAgentResponse='',sending=false,currentConversation=null,currentUser=null;
 const activePolls=new Set(),requestData=new Map(),requestBubbles=new Map();
 function render(text){const safe=String(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');return safe.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')}
 function hideWelcome(){const welcome=$('welcome');if(welcome)welcome.remove()}
@@ -244,13 +266,15 @@ function drawActivity(data){const container=$('activity');container.innerHTML=''
 function draw(data){drawActivity(data)}
 function normalizedState(state){return state==='QUEUED'?'DRAFTING':state}
 function ticketRequired(data,state){return Boolean(data.action?.required)||['AWAITING_APPROVAL','APPROVED','EXECUTING','REJECTED','EXPIRED','COMPLETED_WITHOUT_ACTION'].includes(state)}
-function updateTicketNotice(data,state,copy,connection){if(!ticketRequired(data,state))return;const tray=$('ticketTray'),id=`ticket-${data.request_id}`,existing=document.getElementById(id),notice=existing||document.createElement('div');notice.id=id;notice.className='ticket-notice';if(state==='COMPLETED')notice.classList.add('complete');if(['REJECTED','EXPIRED','COMPLETED_WITHOUT_ACTION'].includes(state)||connection==='offline')notice.classList.add('failed');notice.innerHTML='<div class="ticket-icon"></div><div><strong></strong><span></span></div>';notice.querySelector('.ticket-icon').textContent=state==='COMPLETED'?'✓':notice.classList.contains('failed')?'!':'↗';notice.querySelector('strong').textContent=`Ticket ${data.reference} · ${connection==='offline'?'Status unavailable':copy[0]}`;notice.querySelector('span').textContent=connection==='offline'?'The ticket is safely stored. Reconnect to refresh its status.':(data.status_message||copy[1]);if(!existing)tray.prepend(notice)}
+function updateTicketNotice(data,state,copy,connection){if(!ticketRequired(data,state))return;const tray=$('ticketTray'),id=`ticket-${data.request_id}`,existing=document.getElementById(id),previous=existing?.dataset.state,notice=existing||document.createElement('div');notice.id=id;notice.dataset.state=state;notice.className='ticket-notice';if(state==='COMPLETED')notice.classList.add('complete');if(['REJECTED','EXPIRED','COMPLETED_WITHOUT_ACTION'].includes(state)||connection==='offline')notice.classList.add('failed');if(previous&&previous!==state){notice.classList.add('updated');setTimeout(()=>notice.classList.remove('updated'),800);if(['APPROVED','COMPLETED','REJECTED','EXPIRED'].includes(state))document.title=`${copy[0]} · Ami Support`}notice.innerHTML='<div class="ticket-icon"></div><div><strong></strong><span></span></div>';notice.querySelector('.ticket-icon').textContent=state==='COMPLETED'?'✓':notice.classList.contains('failed')?'!':'↗';notice.querySelector('strong').textContent=`Ticket ${data.reference} · ${connection==='offline'?'Status unavailable':copy[0]}`;notice.querySelector('span').textContent=connection==='offline'?'The ticket is safely stored. Reconnect to refresh its status.':(data.status_message||copy[1]);if(!existing)tray.prepend(notice)}
 function workflowBubble(data){const item=addMessage('ami','',true);const bubble=item.querySelector('.bubble');bubble.dataset.requestId=data.request_id;requestBubbles.set(data.request_id,bubble);return bubble}
 function renderWorkflow(bubble,data,connection='online'){
   const follow=followsLatest();
-  requestData.set(data.request_id,data);bubble.classList.remove('typing');bubble.removeAttribute('aria-label');bubble.textContent='';
   const state=normalizedState(data.state),copy=STATE_COPY[state]||[state.replaceAll('_',' '),'Status updated.'];
+  requestData.set(data.request_id,data);
   updateTicketNotice(data,state,copy,connection);
+  if(!bubble)return;
+  bubble.classList.remove('typing');bubble.removeAttribute('aria-label');bubble.textContent='';
   if(TERMINAL.has(state)){const reply=data.reply||data.status_message||copy[1];bubble.innerHTML=render(reply);if(state==='COMPLETED')lastAgentResponse=reply}
   else if(ticketRequired(data,state)){bubble.innerHTML=render(`I've raised ticket **${data.reference}** for review. You can continue chatting while a support specialist checks it.`)}
   else if(connection==='offline'){bubble.innerHTML=render('I lost the connection while preparing this response. I’ll keep checking automatically.')}
@@ -258,7 +282,7 @@ function renderWorkflow(bubble,data,connection='online'){
   if(follow)scrollToLatest(true);
 }
 async function refreshRequest(id,manual=false){
-  const bubble=requestBubbles.get(id),previous=requestData.get(id);if(!bubble||!previous)return'offline';
+  const bubble=requestBubbles.get(id),previous=requestData.get(id);if(!previous)return'offline';
   if(manual)renderWorkflow(bubble,previous,'checking');
   try{const response=await fetch(`/requests/${id}`,{cache:'no-store'});if(!response.ok)throw new Error(`status ${response.status}`);const data=await response.json();renderWorkflow(bubble,data);return TERMINAL.has(normalizedState(data.state))?'done':'pending'}
   catch(error){renderWorkflow(bubble,previous,'offline');return'offline'}
@@ -272,17 +296,26 @@ async function sendMessage(text){text=text.trim();if(!text||sending)return;sendi
 $('composer').addEventListener('submit',event=>{event.preventDefault();const text=$('messageInput').value;$('messageInput').value='';$('messageInput').style.height='auto';sendMessage(text)});
 $('messageInput').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();$('composer').requestSubmit()}});
 $('messageInput').addEventListener('input',event=>{event.target.style.height='auto';event.target.style.height=Math.min(event.target.scrollHeight,140)+'px'});
-document.querySelectorAll('[data-prompt]').forEach(button=>button.addEventListener('click',()=>{document.body.classList.remove('menu-open');sendMessage(button.dataset.prompt)}));
-async function resetConversation(){if(sending)return;const response=await fetch('/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),data=await response.json();$('chat').innerHTML='';$('ticketTray').innerHTML='';$('activity').innerHTML='';lastAgentResponse='';addMessage('ami',GREETING);draw({...data,steps:[]})}
-async function logout(){await fetch('/auth/logout',{method:'POST'});location.href='/login'}
+function showWelcome(){
+  $('chat').innerHTML=`<section class="welcome" id="welcome"><div class="welcome-icon" aria-hidden="true">✦</div><h1 id="welcomeHeading">Welcome${currentUser?.display_name?', '+render(currentUser.display_name):''}</h1><p>I can find orders, track deliveries, explain policies, start returns, cancel eligible orders, or connect you with a person.</p><div class="suggestions"><button class="suggestion" data-prompt="List all of my current orders"><b>Find my orders</b><span>Use your signed-in account</span></button><button class="suggestion" data-prompt="How long do I have to return something?"><b>Check the return policy</b><span>Ask a knowledge question</span></button><button class="suggestion" data-prompt="Track my package"><b>Track a delivery</b><span>Check a current shipment</span></button><button class="suggestion" data-prompt="My package arrived damaged. What happens next?"><b>Report a problem</b><span>Review available options</span></button></div></section>`;
+  bindPromptButtons();
+}
+function bindPromptButtons(){document.querySelectorAll('[data-prompt]').forEach(button=>{button.onclick=()=>{document.body.classList.remove('menu-open');sendMessage(button.dataset.prompt)}})}
+function renderTranscript(state){currentConversation=state.conversation_id||currentConversation;$('chat').innerHTML='';lastAgentResponse='';if(state.transcript?.length){for(const message of state.transcript)addMessage(message.role==='user'?'customer':'ami',message.content);const replies=state.transcript.filter(message=>message.role==='assistant');lastAgentResponse=replies.at(-1)?.content||''}else showWelcome()}
+async function loadConversations(){const response=await fetch('/conversations',{cache:'no-store'});if(!response.ok)return;const data=await response.json();$('conversationList').innerHTML=data.items.length?data.items.map(item=>`<button class="conversation-link ${item.conversation_id===currentConversation?'active':''}" data-conversation="${render(item.conversation_id)}" title="${render(item.title)}">${render(item.title)}</button>`).join(''):'<div class="conversation-empty">No previous conversations yet.</div>';document.querySelectorAll('[data-conversation]').forEach(button=>button.onclick=()=>openConversation(button.dataset.conversation))}
+async function newConversation(){if(sending)return;const response=await fetch('/conversations',{method:'POST'});if(!response.ok)return;const data=await response.json();currentConversation=data.conversation_id;$('ticketTray').innerHTML='';$('activity').innerHTML='';requestData.clear();requestBubbles.clear();showWelcome();await loadConversations();document.body.classList.remove('menu-open');$('messageInput').focus()}
+async function openConversation(id){if(sending)return;const response=await fetch(`/conversations/${encodeURIComponent(id)}/activate`,{method:'POST'});if(!response.ok)return;const data=await response.json();currentConversation=id;renderTranscript(data);await restoreTickets();await loadConversations();document.body.classList.remove('menu-open')}
+async function logout(){try{await fetch('/auth/logout?role=customer',{method:'POST'})}finally{location.href='/login?role=customer'}}
+async function restoreTickets(){const response=await fetch('/requests?limit=100',{cache:'no-store'});if(!response.ok)return;const data=await response.json();$('ticketTray').innerHTML='';for(const item of data.items){requestData.set(item.request_id,item);const state=normalizedState(item.state),copy=STATE_COPY[state]||[state,'Status updated.'];updateTicketNotice(item,state,copy);if(!TERMINAL.has(state))pollRequest(item.request_id,null)}}
 async function restoreCustomerWorkspace(){
   const [stateResult,requestsResult]=await Promise.allSettled([fetch('/state',{cache:'no-store'}),fetch('/requests?limit=100',{cache:'no-store'})]);
-  if(stateResult.status==='fulfilled'&&stateResult.value.ok){const state=await stateResult.value.json();draw({...state,steps:[]})}
-  if(requestsResult.status==='fulfilled'&&requestsResult.value.ok){const data=await requestsResult.value.json();if(data.items.length){$('chat').innerHTML='';for(const item of data.items){addMessage('customer',item.message||'Support request');const bubble=workflowBubble(item);renderWorkflow(bubble,item);if(!TERMINAL.has(normalizedState(item.state)))pollRequest(item.request_id,bubble)}return}}
-  if(stateResult.status==='fulfilled'&&stateResult.value.ok){const state=await fetch('/state',{cache:'no-store'}).then(r=>r.json());if(state.transcript?.length){$('chat').innerHTML='';for(const message of state.transcript)addMessage(message.role==='user'?'customer':'ami',message.content);const replies=state.transcript.filter(message=>message.role==='assistant');lastAgentResponse=replies.at(-1)?.content||''}}
+  if(stateResult.status==='fulfilled'&&stateResult.value.ok){const state=await stateResult.value.json();currentUser=state.user;currentConversation=state.conversation_id;$('customerIdentity').textContent=state.user.email;$('welcomeName').textContent=`Welcome, ${state.user.display_name}`;renderTranscript(state);draw({...state,steps:[]})}
+  if(requestsResult.status==='fulfilled'&&requestsResult.value.ok){const data=await requestsResult.value.json();for(const item of data.items){requestData.set(item.request_id,item);const state=normalizedState(item.state),copy=STATE_COPY[state]||[state,'Status updated.'];updateTicketNotice(item,state,copy);if(!TERMINAL.has(state))pollRequest(item.request_id,null)}}
+  await loadConversations();
 }
 window.addEventListener('online',()=>{for(const [id,bubble] of requestBubbles){if(!TERMINAL.has(normalizedState(requestData.get(id)?.state))){refreshRequest(id,true);pollRequest(id,bubble)}}});
-restoreCustomerWorkspace().catch(()=>addMessage('ami','I could not restore ticket status. Check your connection and refresh to try again.'));
+bindPromptButtons();
+restoreCustomerWorkspace().catch(()=>addMessage('ami','I could not restore your workspace. Check your connection and refresh to try again.'));
 </script>
 </body>
 </html>

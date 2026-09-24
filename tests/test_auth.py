@@ -107,10 +107,10 @@ def test_bcrypt_password_byte_limit_is_a_validation_error():
 def test_logout_revokes_session_and_refresh_rotates_it():
     with client_for(get_repository()) as client:
         assert login(client).status_code == 200
-        before = client.cookies.get("ami_session")
+        before = client.cookies.get("ami_customer_session")
         refreshed = client.post("/auth/refresh")
         assert refreshed.status_code == 200
-        assert client.cookies.get("ami_session") != before
+        assert client.cookies.get("ami_customer_session") != before
         assert client.get("/auth/me").status_code == 200
         assert client.post("/auth/logout").status_code == 200
         assert client.get("/auth/me").status_code == 401
@@ -172,3 +172,43 @@ def test_stolen_conversation_cookie_is_replaced_for_a_different_user():
         reset_identity(mei_token)
     assert attempted.stale is True
     assert attempted.sid != raj_session.sid
+
+
+def test_customer_and_admin_sessions_coexist_in_one_browser():
+    repository = get_repository()
+    with client_for(repository) as client:
+        assert login(client).status_code == 200
+        customer_page = client.get("/")
+        assert customer_page.status_code == 200
+        customer_sid = client.cookies.get("sid")
+
+        assert login(client, "admin@example.com", "AdminDemo!2026").status_code == 200
+        assert client.cookies.get("ami_customer_session")
+        assert client.cookies.get("ami_admin_session")
+        assert client.cookies.get("sid") == customer_sid
+        assert client.get("/admin/approvals").status_code == 200
+
+        refreshed_customer = client.get("/")
+        assert refreshed_customer.status_code == 200
+        assert client.cookies.get("sid") == customer_sid
+
+
+def test_authenticated_email_seeds_customer_working_memory():
+    repository = get_repository()
+    with client_for(repository) as client:
+        assert login(client).status_code == 200
+        client.get("/")
+        state = client.get("/state").json()
+        sid = state["conversation_id"]
+        assert repository.sessions[sid]["work"]["customer_email"] == "raj@example.com"
+
+
+def test_customer_cannot_activate_another_customers_conversation():
+    repository = get_repository()
+    with client_for(repository) as client:
+        assert login(client).status_code == 200
+        client.get("/")
+        raj_sid = client.get("/state").json()["conversation_id"]
+        assert client.post("/auth/logout?role=customer").status_code == 200
+        assert login(client, "mei@example.com", "MeiDemo!2026").status_code == 200
+        assert client.post(f"/conversations/{raj_sid}/activate").status_code == 404

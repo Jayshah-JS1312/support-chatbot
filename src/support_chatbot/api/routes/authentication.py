@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 
 from support_chatbot import UI_DIR
-from support_chatbot.api.auth_middleware import AUTH_COOKIE
-from support_chatbot.api.dependencies import require_user, runtime, set_auth_cookie
+from support_chatbot.api.auth_middleware import ADMIN_AUTH_COOKIE, CUSTOMER_AUTH_COOKIE
+from support_chatbot.api.dependencies import require_user, runtime, set_role_auth_cookie
 from support_chatbot.api.models import (
     LoginRequest,
     PasswordResetConfirmRequest,
@@ -22,8 +22,10 @@ LOGIN_PAGE = (UI_DIR / "login.html").read_text()
 
 @router.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
-    if getattr(request.state, "user", None):
-        return HTMLResponse('<meta http-equiv="refresh" content="0;url=/">')
+    user = getattr(request.state, "user", None)
+    if user:
+        destination = "/admin/approvals" if user.role == "admin" else "/"
+        return HTMLResponse(f'<meta http-equiv="refresh" content="0;url={destination}">')
     return HTMLResponse(LOGIN_PAGE)
 
 
@@ -35,7 +37,9 @@ def signup(payload: SignupRequest, request: Request, response: Response):
         )
     except DuplicateEmailError as error:
         raise HTTPException(status_code=409, detail="An account with this email already exists") from error
-    set_auth_cookie(response, token)
+    set_role_auth_cookie(response, token, user.role)
+    if user.role == "customer":
+        response.delete_cookie("sid", path="/")
     return {"user": user.public()}
 
 
@@ -45,29 +49,35 @@ def login(payload: LoginRequest, request: Request, response: Response):
         user, token = runtime(request).repository.login(payload.email, payload.password)
     except AuthenticationError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
-    set_auth_cookie(response, token)
+    set_role_auth_cookie(response, token, user.role)
+    if user.role == "customer":
+        response.delete_cookie("sid", path="/")
     return {"user": user.public()}
 
 
 @router.post("/auth/logout")
-def logout(request: Request, response: Response, user=Depends(require_user)):
-    del user
-    runtime(request).repository.logout(request.cookies.get(AUTH_COOKIE))
-    response.delete_cookie(AUTH_COOKIE, path="/")
-    response.delete_cookie("sid", path="/")
+def logout(request: Request, response: Response, role: str = "customer", user=Depends(require_user)):
+    if role not in {"customer", "admin"} or user.role != role:
+        raise HTTPException(status_code=403, detail="Cannot log out a different role")
+    cookie_name = ADMIN_AUTH_COOKIE if role == "admin" else CUSTOMER_AUTH_COOKIE
+    runtime(request).repository.logout(request.cookies.get(cookie_name))
+    response.delete_cookie(cookie_name, path="/")
+    if role == "customer":
+        response.delete_cookie("sid", path="/")
     return {"ok": True}
 
 
 @router.post("/auth/refresh")
 def refresh(request: Request, response: Response, user=Depends(require_user)):
-    del user
     try:
         identity, token = runtime(request).repository.refresh_session(
-            request.cookies.get(AUTH_COOKIE)
+            request.cookies.get(
+                ADMIN_AUTH_COOKIE if user.role == "admin" else CUSTOMER_AUTH_COOKIE
+            )
         )
     except AuthenticationError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
-    set_auth_cookie(response, token)
+    set_role_auth_cookie(response, token, identity.role)
     return {"user": identity.public()}
 
 

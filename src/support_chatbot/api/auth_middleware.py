@@ -7,7 +7,19 @@ from anyio import to_thread
 from support_chatbot.auth import reset_identity, set_identity
 
 
-AUTH_COOKIE = "ami_session"
+CUSTOMER_AUTH_COOKIE = "ami_customer_session"
+ADMIN_AUTH_COOKIE = "ami_admin_session"
+# Compatibility name for callers that only need to identify the customer cookie.
+AUTH_COOKIE = CUSTOMER_AUTH_COOKIE
+
+
+def auth_cookie_for_scope(scope):
+    """Keep customer and operator identities isolated in the same browser."""
+    path = scope.get("path", "")
+    query = scope.get("query_string", b"").decode("latin-1")
+    admin_path = path.startswith(("/admin", "/monitoring", "/evals", "/metrics"))
+    admin_auth_action = (path.startswith("/auth/") or path == "/login") and "role=admin" in query
+    return ADMIN_AUTH_COOKIE if admin_path or admin_auth_action else CUSTOMER_AUTH_COOKIE
 
 
 class AuthenticationMiddleware:
@@ -21,9 +33,14 @@ class AuthenticationMiddleware:
         headers = {key.lower(): value for key, value in scope.get("headers", [])}
         cookie = SimpleCookie()
         cookie.load(headers.get(b"cookie", b"").decode("latin-1"))
-        morsel = cookie.get(AUTH_COOKIE)
+        cookie_name = auth_cookie_for_scope(scope)
+        fallback_name = (CUSTOMER_AUTH_COOKIE if cookie_name == ADMIN_AUTH_COOKIE
+                         else ADMIN_AUTH_COOKIE)
         identity = None
-        if morsel:
+        for candidate in (cookie_name, fallback_name):
+            morsel = cookie.get(candidate)
+            if not morsel:
+                continue
             try:
                 identity = await to_thread.run_sync(
                     scope["app"].state.runtime.repository.authenticate,
@@ -31,6 +48,8 @@ class AuthenticationMiddleware:
                 )
             except Exception:
                 identity = None
+            if identity:
+                break
         scope.setdefault("state", {})["user"] = identity
         token = set_identity(identity)
         try:

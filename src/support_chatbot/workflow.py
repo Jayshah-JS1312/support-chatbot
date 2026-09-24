@@ -149,6 +149,25 @@ class WorkflowCoordinator:
 
         with system_identity():
             context = self.repository.get_request_agent_context(request["id"])
+        direct = policy.direct_response(request["summary"])
+        if direct:
+            if context and context["session_id"]:
+                from support_chatbot import agent_profile
+                from support_chatbot.memory import ConversationMemory
+                token = set_identity(context["identity"])
+                try:
+                    persisted = self.repository.load_session(context["session_id"]) or {"history": [], "work": {}}
+                    conversation = ConversationMemory.from_dict(
+                        agent_profile.system_prompt(), {"history": persisted["history"]}
+                    )
+                    conversation.add_assistant({"role": "assistant", "content": direct})
+                    self.repository.save_session(
+                        context["session_id"], conversation.history,
+                        persisted["work"], context["planner"],
+                    )
+                finally:
+                    reset_identity(token)
+            return direct, {"type": "send_resolution", "arguments": {}, "policy_evidence": []}
         if not context or not context["session_id"]:
             safe_text, note = policy.check_input(request["summary"])
             prompt = [{"role": "system", "content": agent_profile.system_prompt()},

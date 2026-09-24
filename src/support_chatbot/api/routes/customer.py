@@ -1,6 +1,6 @@
 """Customer-facing asynchronous requests, session, reset, and feedback."""
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from support_chatbot.api.dependencies import (
@@ -17,6 +17,7 @@ from support_chatbot.api.models import (
     ResetRequest,
 )
 from support_chatbot.api.runtime import CHAT_PAGE
+from support_chatbot.config import settings
 from support_chatbot.persistence import ActionProposalError, IdempotencyConflictError
 
 
@@ -31,7 +32,9 @@ def chat_page(request: Request):
         return RedirectResponse("/login", status_code=303)
     if user.role != "customer":
         return RedirectResponse("/admin/approvals", status_code=303)
-    context = runtime(request).get_session(request.cookies.get("sid"), user.user_id)
+    context = runtime(request).get_session(
+        request.cookies.get("sid"), user.user_id, user.email, restore_latest=False
+    )
     response = HTMLResponse(CHAT_PAGE)
     set_session_cookie(response, context)
     return response
@@ -42,7 +45,44 @@ def current_state(request: Request, context=Depends(session)):
     app_runtime = runtime(request)
     with app_runtime.get_turn_lock(context.sid):
         refreshed = app_runtime.reload_session(context.sid, context.session.get("user_id"))
-        return {**app_runtime.public_state(refreshed), "stale": context.stale}
+        user = request.state.user
+        return {
+            **app_runtime.public_state(refreshed), "stale": context.stale,
+            "user": user.public(), "conversation_id": context.sid,
+        }
+
+
+@router.get("/conversations")
+def conversations(request: Request, _=Depends(require_customer)):
+    return {"items": runtime(request).repository.list_conversations()}
+
+
+@router.post("/conversations", status_code=201)
+def new_conversation(request: Request, response: Response, user=Depends(require_customer)):
+    context = runtime(request).create_session(user.user_id, user.email)
+    set_session_cookie(response, context)
+    return {"conversation_id": context.sid, **runtime(request).public_state(context.session)}
+
+
+@router.post("/conversations/{conversation_id}/activate")
+def activate_conversation(
+    conversation_id: str, request: Request, response: Response,
+    user=Depends(require_customer),
+):
+    if not runtime(request).repository.load_session(conversation_id):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    context = runtime(request).get_session(
+        conversation_id, user.user_id, user.email, restore_latest=False
+    )
+    if context.stale:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    # Selecting an existing thread must update the browser even though the
+    # context itself was not newly created.
+    response.set_cookie(
+        "sid", context.sid, path="/", httponly=True, samesite="lax",
+        secure=settings.secure_cookies,
+    )
+    return {"conversation_id": context.sid, **runtime(request).public_state(context.session)}
 
 
 @router.post("/reset")

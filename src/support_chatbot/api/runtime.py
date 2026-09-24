@@ -54,18 +54,22 @@ class RuntimeState:
         self.started_at = time.time()
 
     @staticmethod
-    def new_session(user_id=None):
-        return {
+    def new_session(user_id=None, user_email=None):
+        session = {
             "convo": ConversationMemory(SYSTEM),
             "work": WorkingMemory(),
             "user_id": user_id,
         }
+        # Authentication is the source of truth for customer identity. The
+        # model may use this verified email but cannot replace it from chat.
+        session["work"].customer_email = user_email
+        return session
 
-    def get_session(self, cookie_sid=None, user_id=None):
+    def get_session(self, cookie_sid=None, user_id=None, user_email=None, *, restore_latest=True):
         """Resolve a browser session and replace unknown stale identifiers."""
         with self.session_lock:
             restored_sid = None
-            if not cookie_sid and user_id:
+            if restore_latest and not cookie_sid and user_id:
                 restored_sid = self.repository.latest_session_id(user_id)
             candidate_sid = cookie_sid or restored_sid
             cached = self.sessions.get(candidate_sid)
@@ -83,16 +87,24 @@ class RuntimeState:
                         "work": WorkingMemory.from_dict(persisted["work"]),
                         "user_id": user_id,
                     }
+                    if user_email:
+                        self.sessions[sid]["work"].customer_email = user_email
                     created = not bool(cookie_sid)
                 else:
                     sid = uuid.uuid4().hex
-                    self.sessions[sid] = self.new_session(user_id)
+                    self.sessions[sid] = self.new_session(user_id, user_email)
                     self.repository.create_session(
                         sid, self.sessions[sid]["work"].to_dict(), user_id
                     )
                     created = True
                 self.turn_locks[sid] = threading.RLock()
             return SessionContext(sid, self.sessions[sid], stale, created)
+
+    def create_session(self, user_id, user_email):
+        """Create a new durable thread without deleting earlier conversations."""
+        return self.get_session(
+            uuid.uuid4().hex, user_id, user_email, restore_latest=False
+        )
 
     def get_turn_lock(self, sid):
         with self.session_lock:

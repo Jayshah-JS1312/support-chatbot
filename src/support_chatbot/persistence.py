@@ -454,6 +454,7 @@ class PostgresRepository:
         return result
 
     def get_support_request(self, request_id):
+        identity = current_identity()
         with self.connection() as conn:
             row = conn.execute(
                 """select r.*, d.content as draft_content, d.proposed_action,
@@ -461,11 +462,13 @@ class PostgresRepository:
                 from public.support_requests r
                 left join public.resolution_drafts d on d.support_request_id=r.id
                 left join public.approval_tasks a on a.resolution_draft_id=d.id
-                where r.id=%s""", (request_id,),
+                where r.id=%s and (%s='admin' or r.user_id=%s)""",
+                (request_id, identity.role, identity.user_id),
             ).fetchone()
         return self._workflow_request(row)
 
     def list_support_requests(self, limit=50):
+        identity = current_identity()
         with self.connection() as conn:
             rows = conn.execute(
                 """select r.*,d.content as draft_content,d.proposed_action,d.action_name,
@@ -473,7 +476,9 @@ class PostgresRepository:
                 from public.support_requests r
                 left join public.resolution_drafts d on d.support_request_id=r.id
                 left join public.approval_tasks a on a.resolution_draft_id=d.id
-                order by r.created_at desc limit %s""", (limit,),
+                where (%s='admin' or r.user_id=%s)
+                order by r.created_at desc limit %s""",
+                (identity.role, identity.user_id, limit),
             ).fetchall()
         return [self._workflow_request(row) for row in reversed(rows)]
 
@@ -1189,6 +1194,27 @@ class PostgresRepository:
                 where user_id=%s order by updated_at desc limit 1""", (user_id,)).fetchone()
         return row["browser_session_id"] if row else None
 
+    def list_conversations(self, limit=50):
+        identity = current_identity()
+        with self.connection() as conn:
+            rows = conn.execute(
+                """select c.browser_session_id,
+                coalesce((select left(m.content,80) from public.messages m
+                    where m.conversation_id=c.id and m.role='user'
+                    order by m.sequence_number limit 1),'New conversation') as title,
+                c.created_at,c.updated_at,
+                (select count(*) from public.messages m where m.conversation_id=c.id) as message_count
+                from public.conversations c
+                where c.user_id=%s order by c.updated_at desc limit %s""",
+                (identity.user_id, limit),
+            ).fetchall()
+        return [{
+            "conversation_id": row["browser_session_id"], "title": row["title"],
+            "message_count": row["message_count"],
+            "created_at": row["created_at"].isoformat(),
+            "updated_at": row["updated_at"].isoformat(),
+        } for row in rows]
+
     def create_session(self, sid, work, user_id=None):
         identity = current_identity()
         owner = user_id or (identity.user_id if identity else None)
@@ -1803,6 +1829,21 @@ class InMemoryRepository:
     def latest_session_id(self, user_id):
         matches = [sid for sid, value in self.sessions.items() if value.get("user_id") == user_id]
         return matches[-1] if matches else None
+    def list_conversations(self, limit=50):
+        identity = current_identity()
+        rows = []
+        for sid, value in reversed(list(self.sessions.items())):
+            if not identity or value.get("user_id") != identity.user_id:
+                continue
+            first = next((m.get("content") for m in value.get("history", [])
+                          if m.get("role") == "user" and m.get("content")), None)
+            rows.append({"conversation_id": sid,
+                         "title": (first or "New conversation")[:80],
+                         "message_count": len([m for m in value.get("history", [])
+                                               if m.get("role") in {"user", "assistant"}]),
+                         "created_at": None, "updated_at": None})
+            if len(rows) >= limit: break
+        return copy.deepcopy(rows)
     def create_session(self, sid, work, user_id=None):
         identity = current_identity(); owner = user_id or (identity.user_id if identity else None)
         self.sessions.setdefault(sid, {"history": [], "work": copy.deepcopy(work), "user_id": owner})
@@ -1815,7 +1856,11 @@ class InMemoryRepository:
         self.sessions[sid] = {"history": copy.deepcopy(history), "work": copy.deepcopy(work),
                               "planner": planner,
                               "user_id": identity.user_id if identity else (previous or {}).get("user_id")}
-    def reset_session(self, sid, work): self.sessions[sid] = {"history": [], "work": copy.deepcopy(work)}
+    def reset_session(self, sid, work):
+        previous = self.sessions.get(sid, {})
+        self.sessions[sid] = {"history": [], "work": copy.deepcopy(work),
+                              "user_id": previous.get("user_id"),
+                              "planner": previous.get("planner", "react")}
     def remember(self, work, session_id):
         email = work.get("customer_email")
         if not email: return
