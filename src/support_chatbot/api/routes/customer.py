@@ -252,10 +252,11 @@ def submit_request(
             detail="Wait for Ami to finish the current response before sending another message",
         ) from error
     if created:
-        with app_runtime.get_turn_lock(context.sid):
-            context.session["convo"].add_user(text)
-            context.session["work"].turn += 1
-            app_runtime.save_sessions(context.sid)
+        # The async worker may have persisted an assistant reply since this
+        # browser context was cached. Always append to the durable transcript.
+        app_runtime.append_user_turn(
+            context.sid, context.session.get("user_id"), text,
+        )
     should_enqueue = created or (row["status"] in {"RECEIVED", "APPROVED"} and not row.get("enqueued_at"))
     enqueued = None
     if should_enqueue:

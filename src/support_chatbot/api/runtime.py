@@ -130,6 +130,22 @@ class RuntimeState:
             }
             return self.sessions[sid]
 
+    def append_user_turn(self, sid, user_id, text):
+        """Append to the durable transcript without overwriting worker output.
+
+        Drafting may finish in another thread or process after the request route
+        returned.  The process-local cache can therefore be older than
+        PostgreSQL and must never be used as the base for the next turn.
+        """
+        with self.get_turn_lock(sid):
+            current = self.reload_session(sid, user_id)
+            if current is None:
+                raise KeyError(f"Conversation {sid} no longer exists")
+            current["convo"].add_user(text)
+            current["work"].turn += 1
+            self.save_sessions(sid)
+            return current
+
     def reset_session(self, sid):
         with self.session_lock:
             user_id = self.sessions.get(sid, {}).get("user_id")

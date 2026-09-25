@@ -153,9 +153,19 @@ def guarded_run(name, args, work):
             return {"needs_confirmation": True,
                     "message": "The customer's latest reply was not an unambiguous "
                                "confirmation. Ask one clear confirmation question."}
+        # These tools only build immutable previews; they do not execute the
+        # action. Validate eligibility before asking the customer to confirm,
+        # so an already-shipped cancellation never enters the approval flow.
+        preview = tools.run(name, args)
+        if "error" in preview:
+            if confirmed and pending and pending["key"] == key \
+                    and work.turn > pending["turn"]:
+                work.pending = None
+            return preview
         if confirmed and pending and pending["key"] == key \
                 and work.turn > pending["turn"]:
             work.pending = None                      # spent
+            return preview
         else:
             work.pending = {"key": key, "turn": work.turn, "args": args}
             observe.log("policy", stage="action", rule="confirmation_required",

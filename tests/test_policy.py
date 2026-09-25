@@ -134,13 +134,26 @@ class TestGuardedRunConfirmation:
         """First call to cancel_order without confirmed=true is a preview."""
         work = WorkingMemory()
         work.turn = 1
-        result = policy.guarded_run("cancel_order", {"order_id": "o1"}, work)
+        result = policy.guarded_run(
+            "cancel_order", {"order_id": "112-3333333-3333333"}, work,
+        )
         assert "needs_confirmation" in result
         assert result["needs_confirmation"] is True
         # The pending confirmation is recorded
         assert work.pending is not None
-        assert work.pending["key"] == ["cancel_order", "o1"]
-        assert work.pending["args"] == {"order_id": "o1"}
+        assert work.pending["key"] == ["cancel_order", "112-3333333-3333333"]
+        assert work.pending["args"] == {"order_id": "112-3333333-3333333"}
+
+    def test_ineligible_shipped_cancellation_is_refused_before_confirmation(self):
+        work = WorkingMemory()
+        work.turn = 1
+
+        result = policy.guarded_run(
+            "cancel_order", {"order_id": "112-2222222-2222222"}, work,
+        )
+
+        assert "already shipped" in result["error"]
+        assert work.pending is None
 
     def test_cancel_order_with_confirmation_runs_tool(self, fresh_store):
         """Second call creates a proposal but cannot execute the action."""
@@ -205,16 +218,19 @@ class TestGuardedRunConfirmation:
         assert "needs_confirmation" in result
 
     def test_different_order_id_different_pending(self, fresh_store):
-        """Confirming a different order is a new pending request."""
+        """Requesting a different eligible action replaces the pending request."""
         work = WorkingMemory()
         work.turn = 1
-        # Request to cancel order 1
-        policy.guarded_run("cancel_order", {"order_id": "o1"}, work)
-        assert work.pending["key"] == ["cancel_order", "o1"]
-        # Request to cancel order 2
-        result = policy.guarded_run("cancel_order", {"order_id": "o2"}, work)
-        # Should be a new pending for o2
-        assert work.pending["key"] == ["cancel_order", "o2"]
+        policy.guarded_run(
+            "cancel_order", {"order_id": "112-3333333-3333333"}, work,
+        )
+        assert work.pending["key"] == ["cancel_order", "112-3333333-3333333"]
+
+        policy.guarded_run("start_return", {
+            "order_id": "112-1111111-1111111", "reason": "defective",
+        }, work)
+
+        assert work.pending["key"] == ["start_return", "112-1111111-1111111"]
 
     @pytest.mark.parametrize("text", [
         "Yes", "Yes please", "Yes now", "Yes please do it", "Proceed",
