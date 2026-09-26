@@ -59,6 +59,13 @@ def run():
         latencies = sorted(result["ms"] for result in results)
         summary = {
             "questions": count,
+            # One local knowledge-index search is performed for every case.
+            # Keep the aggregate and breakdown explicit so operators do not
+            # mistake retrieval work for paid model traffic.
+            "total_calls": count,
+            "retrieval_calls": count,
+            "model_calls": 0,
+            "estimated_cost_usd": 0.0,
             "recall_at_1": _percent(sum(r["rank"] == 1 for r in results), count),
             "recall_at_3": _percent(sum(r["rank"] is not None for r in results), count),
             "category_accuracy": _percent(sum(r["category_correct"] for r in results), count),

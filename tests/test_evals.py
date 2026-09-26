@@ -30,6 +30,10 @@ def test_run_scores_rank_and_persists_report(monkeypatch, tmp_path):
     report = evals.run()
 
     assert report["status"] == "complete"
+    assert report["summary"]["total_calls"] == 2
+    assert report["summary"]["retrieval_calls"] == 2
+    assert report["summary"]["model_calls"] == 0
+    assert report["summary"]["estimated_cost_usd"] == 0.0
     assert report["summary"]["recall_at_1"] == 0.0
     assert report["summary"]["recall_at_3"] == 50.0
     assert report["summary"]["mrr"] == 0.25
