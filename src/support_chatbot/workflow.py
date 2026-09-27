@@ -106,25 +106,40 @@ class UpstashDispatcher:
 class LocalWorkflowDispatcher:
     """Process durable workflow deliveries off-request for local Docker use."""
 
-    def __init__(self):
-        self.messages = queue.Queue()
+    def __init__(self, workers=None, queue_max=None):
+        worker_count = workers if workers is not None else settings.local_workflow_workers
+        queue_limit = queue_max if queue_max is not None else settings.local_workflow_queue_max
+        if worker_count < 1 or queue_limit < 1:
+            raise ValueError("Local workflow workers and queue size must be positive")
+        self.messages = queue.Queue(maxsize=queue_limit)
         self.coordinator = None
         self.closed = threading.Event()
-        self.worker = threading.Thread(target=self._run, name="ami-local-workflow", daemon=True)
-        self.worker.start()
+        self.workers = [
+            threading.Thread(
+                target=self._run,
+                name=f"ami-local-workflow-{index + 1}",
+                daemon=True,
+            )
+            for index in range(worker_count)
+        ]
+        for worker in self.workers:
+            worker.start()
 
     def bind(self, coordinator):
         self.coordinator = coordinator
 
     def enqueue(self, request_id, phase):
         run_id = f"local-{uuid.uuid4().hex}"
-        self.messages.put((str(request_id), phase, run_id))
+        try:
+            self.messages.put_nowait((str(request_id), phase, run_id))
+        except queue.Full as error:
+            raise EnqueueError("local_workflow_queue_full") from error
         return run_id
 
     def _run(self):
         while not self.closed.is_set():
             try:
-                request_id, phase, run_id = self.messages.get(timeout=0.2)
+                request_id, phase, _run_id = self.messages.get(timeout=0.2)
             except queue.Empty:
                 continue
             try:
@@ -136,16 +151,25 @@ class LocalWorkflowDispatcher:
                     self.coordinator.draft(request_id)
             except Exception as error:
                 if self.coordinator is not None:
-                    self.coordinator.record_failure(
-                        request_id, run_id, 500, type(error).__name__, {"dispatcher": "local"}
-                    )
+                    try:
+                        self.coordinator.reschedule_local_failure(request_id, phase, error)
+                    except Exception as recovery_error:
+                        # A temporary database outage must not permanently kill
+                        # a local worker. The durable lease will become eligible
+                        # for the periodic recovery scan after it expires.
+                        observe.log(
+                            "error",
+                            where="local_workflow_reschedule",
+                            error=type(recovery_error).__name__,
+                        )
                 observe.log("error", where="local_workflow", error=type(error).__name__)
             finally:
                 self.messages.task_done()
 
     def close(self):
         self.closed.set()
-        self.worker.join(timeout=2)
+        for worker in self.workers:
+            worker.join(timeout=2)
 
 
 class WorkflowCoordinator:
@@ -163,10 +187,17 @@ class WorkflowCoordinator:
             target=self._monitor_absence, name="ami-absence-policy", daemon=True
         )
         self.absence_worker.start()
+        self.recovery_closed = threading.Event()
+        self.recovery_worker = threading.Thread(
+            target=self._monitor_recovery, name="ami-workflow-recovery", daemon=True
+        )
+        self.recovery_worker.start()
 
     def close(self):
         self.absence_closed.set()
         self.absence_worker.join(timeout=2)
+        self.recovery_closed.set()
+        self.recovery_worker.join(timeout=2)
         close = getattr(self.dispatcher, "close", None)
         if close:
             close()
@@ -178,6 +209,14 @@ class WorkflowCoordinator:
                 self.apply_absence_policy()
             except Exception as error:
                 observe.log("error", where="absence_policy", error=type(error).__name__)
+
+    def _monitor_recovery(self):
+        interval = max(1, settings.workflow_recovery_scan_seconds)
+        while not self.recovery_closed.wait(interval):
+            try:
+                self.recover()
+            except Exception as error:
+                observe.log("error", where="workflow_recovery", error=type(error).__name__)
 
     def apply_absence_policy(self):
         with system_identity():
@@ -293,7 +332,7 @@ class WorkflowCoordinator:
             reset_identity(token)
 
     def enqueue(self, request):
-        phase = "execute" if request["status"] == "APPROVED" else "draft"
+        phase = "execute" if request["status"] in {"APPROVED", "EXECUTING"} else "draft"
         try:
             run_id = self.dispatcher.enqueue(request["id"], phase)
         except EnqueueError as error:
@@ -319,6 +358,25 @@ class WorkflowCoordinator:
             success, _ = self.enqueue(request)
             result["enqueued" if success else "pending"] += 1
         return result
+
+    def reschedule_local_failure(self, request_id, phase, error):
+        """Release a failed local delivery back to durable retry state."""
+        with system_identity():
+            row = self.repository.reschedule_processing_failure(
+                request_id,
+                phase,
+                type(error).__name__,
+                settings.workflow_enqueue_max_attempts,
+            )
+            if row and row.get("status") == "COMPLETED_WITHOUT_ACTION":
+                self.repository.record_dead_letter(
+                    request_id,
+                    None,
+                    503,
+                    "processing_retry_exhausted",
+                    {"attempts": row.get("enqueue_attempts"), "phase": phase},
+                )
+            return row
 
     def draft(self, request_id):
         with system_identity():

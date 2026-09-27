@@ -176,7 +176,8 @@ curl --cookie "ami_auth=<admin-session-token>" http://localhost:8000/metrics
 ```
 
 Read [deployment](docs/deployment.md), [architecture](docs/architecture.md),
-and [security](SECURITY.md) before exposing the service beyond localhost.
+[scaling and load testing](docs/scaling.md), and [security](SECURITY.md) before
+exposing the service beyond localhost.
 
 ## Current production boundary
 

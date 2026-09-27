@@ -140,6 +140,10 @@ def stats():
     errors = [e for e in calls if not e["ok"]]
     runtime_errors = [e for e in events if e["kind"] == "error"
                       or (e["kind"] == "llm" and e.get("error"))]
+    retries = [e for e in events if e["kind"] == "llm_retry"]
+    capacity_rejections = [
+        e for e in events if e["kind"] == "model_capacity" and e.get("outcome") == "rejected"
+    ]
     successful_turns = [e for e in turns if not e.get("error")]
 
     return {
@@ -154,6 +158,9 @@ def stats():
         "tokens": sum(e.get("tokens") or 0 for e in llm),
         "tokens_in": sum(e.get("tokens_in") or 0 for e in llm),
         "tokens_out": sum(e.get("tokens_out") or 0 for e in llm),
+        "cached_tokens": sum(e.get("cached") or 0 for e in llm),
+        "model_retries": len(retries),
+        "model_capacity_rejections": len(capacity_rejections),
         "cost": sum(e.get("cost") or 0 for e in llm),
         # What one customer conversation actually costs — the number that
         # matters when you multiply by a support queue.
@@ -196,6 +203,15 @@ def prometheus_metrics(operations=None):
         "# HELP support_agent_tokens_total Model tokens consumed.",
         "# TYPE support_agent_tokens_total counter",
         f"support_agent_tokens_total {snapshot['tokens']}",
+        "# HELP support_agent_cached_prompt_tokens_total Prompt tokens served from provider cache.",
+        "# TYPE support_agent_cached_prompt_tokens_total counter",
+        f"support_agent_cached_prompt_tokens_total {snapshot['cached_tokens']}",
+        "# HELP support_agent_model_retries_total Retried transient model calls.",
+        "# TYPE support_agent_model_retries_total counter",
+        f"support_agent_model_retries_total {snapshot['model_retries']}",
+        "# HELP support_agent_model_capacity_rejections_total Calls rejected by local concurrency backpressure.",
+        "# TYPE support_agent_model_capacity_rejections_total counter",
+        f"support_agent_model_capacity_rejections_total {snapshot['model_capacity_rejections']}",
         "# HELP support_agent_cost_usd_total Estimated model spend in US dollars.",
         "# TYPE support_agent_cost_usd_total counter",
         f"support_agent_cost_usd_total {snapshot['cost']:.8f}",

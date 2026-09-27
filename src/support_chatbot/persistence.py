@@ -83,6 +83,8 @@ class PostgresRepository:
                         self.database_url,
                         min_size=settings.database_pool_min,
                         max_size=settings.database_pool_max,
+                        timeout=settings.database_pool_timeout_seconds,
+                        max_waiting=settings.database_pool_max_waiting,
                         kwargs={"row_factory": dict_row},
                         open=False,
                     )
@@ -620,10 +622,34 @@ class PostgresRepository:
         with self.connection() as conn:
             rows = conn.execute(
                 """select * from public.support_requests
-                where status in ('RECEIVED','APPROVED') and next_enqueue_at<=now()
+                where (status in ('RECEIVED','APPROVED') and next_enqueue_at<=now())
+                   or (status in ('DRAFTING','EXECUTING') and processing_lease_until<now())
                 order by created_at for update skip locked limit %s""", (limit,),
             ).fetchall()
         return [self._workflow_request(row) for row in rows]
+
+    def reschedule_processing_failure(self, request_id, phase, error, max_attempts=5):
+        expected = "EXECUTING" if phase == "execute" else "DRAFTING"
+        retry_state = "APPROVED" if phase == "execute" else "RECEIVED"
+        with self.connection() as conn:
+            row = conn.execute(
+                """update public.support_requests set
+                status=case when enqueue_attempts+1 >= %s
+                       then 'COMPLETED_WITHOUT_ACTION' else %s end,
+                processing_lease_until=null,enqueued_at=null,
+                enqueue_attempts=enqueue_attempts+1,
+                next_enqueue_at=now()+make_interval(
+                  secs => least(60,power(2,least(enqueue_attempts,6))::int)
+                ),last_error=%s,updated_at=now(),
+                completed_at=case when enqueue_attempts+1 >= %s then now() else completed_at end,
+                metadata=case when enqueue_attempts+1 >= %s then metadata ||
+                  '{"customer_status":"Ami could not finish this request after repeated attempts. No action was taken.","failure_closed":true}'::jsonb
+                  else metadata end
+                where id=%s and status=%s returning *""",
+                (max_attempts, retry_state, str(error)[:500], max_attempts,
+                 max_attempts, request_id, expected),
+            ).fetchone()
+        return self._workflow_request(row)
 
     def claim_drafting(self, request_id, lease_seconds):
         with self.connection() as conn:
@@ -1330,6 +1356,14 @@ class PostgresRepository:
 
     def _rebuild_user_memory(self, conn, user_id):
         """Recompute derived memory so deleted transcripts cannot be recalled."""
+        # Multiple browser tabs can delete conversations for the same customer
+        # concurrently. Serialize this delete-and-rebuild critical section by
+        # user; otherwise both transactions can delete the same derived rows
+        # and then race to insert the same primary/unique keys.
+        conn.execute(
+            "select pg_advisory_xact_lock(hashtextextended(%s,0))",
+            (str(user_id),),
+        )
         rows = conn.execute(
             """select browser_session_id,working_memory from public.conversations
             where user_id=%s order by created_at""", (user_id,),
@@ -1734,8 +1768,37 @@ class InMemoryRepository:
             )
         return copy.deepcopy(row)
     def pending_enqueues(self, limit=100):
-        return [copy.deepcopy(row) for row in self.support_requests.values()
-                if row["status"] in {"RECEIVED", "APPROVED"}][:limit]
+        now = datetime.now(timezone.utc)
+        def due(row):
+            if row["status"] in {"RECEIVED", "APPROVED"}:
+                return datetime.fromisoformat(row["next_enqueue_at"]) <= now
+            lease = row.get("processing_lease_until")
+            return bool(
+                row["status"] in {"DRAFTING", "EXECUTING"}
+                and lease and datetime.fromisoformat(lease) < now
+            )
+        return [copy.deepcopy(row) for row in self.support_requests.values() if due(row)][:limit]
+    def reschedule_processing_failure(self, request_id, phase, error, max_attempts=5):
+        row = self.support_requests.get(str(request_id))
+        expected = "EXECUTING" if phase == "execute" else "DRAFTING"
+        if not row or row["status"] != expected: return None
+        row["status"] = "APPROVED" if phase == "execute" else "RECEIVED"
+        row["processing_lease_until"] = None; row["enqueued_at"] = None
+        row["enqueue_attempts"] += 1; row["last_error"] = str(error)[:500]
+        row["next_enqueue_at"] = (
+            datetime.now(timezone.utc) + timedelta(seconds=min(60, 2 ** min(row["enqueue_attempts"] - 1, 6)))
+        ).isoformat()
+        if row["enqueue_attempts"] >= max_attempts:
+            row["status"] = "COMPLETED_WITHOUT_ACTION"
+            row["completed_at"] = datetime.now(timezone.utc).isoformat()
+            row.setdefault("metadata", {}).update({
+                "customer_status": (
+                    "Ami could not finish this request after repeated attempts. "
+                    "No action was taken."
+                ),
+                "failure_closed": True,
+            })
+        return copy.deepcopy(row)
     def claim_drafting(self, request_id, lease_seconds):
         row = self.support_requests.get(str(request_id))
         if not row or row["status"] not in {"RECEIVED", "QUEUED"}: return None

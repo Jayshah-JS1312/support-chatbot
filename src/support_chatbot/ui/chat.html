@@ -274,7 +274,7 @@ async function refreshRequest(id,manual=false){
   catch(error){renderWorkflow(bubble,previous,'offline');return'offline'}
 }
 function updateTicketLink(tickets){const count=tickets.filter(ticket=>['open','in_progress'].includes(ticket.status)).length,status=$('ticketLinkStatus');status.textContent=count?`${count} open →`:'View status →';status.classList.toggle('has-open',count>0);status.setAttribute('aria-label',count?`${count} open support ticket${count===1?'':'s'}`:'View support ticket status')}
-async function refreshTicketLink(){const response=await fetch('/tickets.json',{cache:'no-store'});if(!response.ok)return;const result=await response.json();updateTicketLink(result.items||[])}
+async function refreshTicketLink(){if(document.hidden)return;const response=await fetch('/tickets.json',{cache:'no-store'});if(!response.ok)return;const result=await response.json();updateTicketLink(result.items||[])}
 async function pollRequest(id,bubble){
   if(activePolls.has(id))return;activePolls.add(id);let failures=0;
   try{while(!TERMINAL.has(normalizedState(requestData.get(id)?.state))){await new Promise(resolve=>setTimeout(resolve,failures?Math.min(10000,2000*2**failures):2000));const result=await refreshRequest(id);if(result==='done')break;failures=result==='offline'?(navigator.onLine?Math.min(failures+1,3):3):0}}
@@ -304,9 +304,10 @@ async function restoreCustomerWorkspace(){
   await loadConversations();
 }
 window.addEventListener('online',()=>{for(const [id,bubble] of requestBubbles){if(!TERMINAL.has(normalizedState(requestData.get(id)?.state))){refreshRequest(id,true);pollRequest(id,bubble)}}});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshTicketLink()});
 bindPromptButtons();
 restoreCustomerWorkspace().catch(()=>addMessage('ami','I could not restore your workspace. Check your connection and refresh to try again.'));
-setInterval(refreshTicketLink,5000);
+setInterval(refreshTicketLink,30000);
 </script>
 </body>
 </html>

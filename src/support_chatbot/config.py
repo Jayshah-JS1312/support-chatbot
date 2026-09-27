@@ -28,7 +28,13 @@ class Settings:
         "postgresql://support_chatbot:support_chatbot@127.0.0.1:5432/support_chatbot",
     )
     database_pool_min: int = int(os.getenv("SUPPORT_CHATBOT_DB_POOL_MIN", "1"))
-    database_pool_max: int = int(os.getenv("SUPPORT_CHATBOT_DB_POOL_MAX", "5"))
+    database_pool_max: int = int(os.getenv("SUPPORT_CHATBOT_DB_POOL_MAX", "10"))
+    database_pool_timeout_seconds: float = float(
+        os.getenv("SUPPORT_CHATBOT_DB_POOL_TIMEOUT_SECONDS", "5")
+    )
+    database_pool_max_waiting: int = int(
+        os.getenv("SUPPORT_CHATBOT_DB_POOL_MAX_WAITING", "100")
+    )
     auth_session_hours: int = int(os.getenv("SUPPORT_CHATBOT_AUTH_SESSION_HOURS", "24"))
     expose_reset_token: bool = _flag("SUPPORT_CHATBOT_EXPOSE_RESET_TOKEN")
     public_base_url: str = os.getenv("SUPPORT_CHATBOT_PUBLIC_BASE_URL", "").rstrip("/")
@@ -38,7 +44,27 @@ class Settings:
     workflow_retries: int = int(os.getenv("SUPPORT_CHATBOT_WORKFLOW_RETRIES", "3"))
     workflow_enqueue_max_attempts: int = int(os.getenv("SUPPORT_CHATBOT_WORKFLOW_ENQUEUE_MAX_ATTEMPTS", "5"))
     workflow_lease_seconds: int = int(os.getenv("SUPPORT_CHATBOT_WORKFLOW_LEASE_SECONDS", "300"))
+    workflow_recovery_scan_seconds: int = int(
+        os.getenv("SUPPORT_CHATBOT_WORKFLOW_RECOVERY_SCAN_SECONDS", "5")
+    )
+    local_workflow_workers: int = int(os.getenv("SUPPORT_CHATBOT_LOCAL_WORKFLOW_WORKERS", "4"))
+    local_workflow_queue_max: int = int(os.getenv("SUPPORT_CHATBOT_LOCAL_WORKFLOW_QUEUE_MAX", "2000"))
     model_timeout_seconds: float = float(os.getenv("SUPPORT_CHATBOT_MODEL_TIMEOUT_SECONDS", "30"))
+    model_max_concurrency: int = int(os.getenv("SUPPORT_CHATBOT_MODEL_MAX_CONCURRENCY", "4"))
+    model_acquire_timeout_seconds: float = float(
+        os.getenv("SUPPORT_CHATBOT_MODEL_ACQUIRE_TIMEOUT_SECONDS", "2")
+    )
+    model_retry_attempts: int = int(os.getenv("SUPPORT_CHATBOT_MODEL_RETRY_ATTEMPTS", "4"))
+    model_retry_base_seconds: float = float(os.getenv("SUPPORT_CHATBOT_MODEL_RETRY_BASE_SECONDS", "1"))
+    model_retry_max_seconds: float = float(os.getenv("SUPPORT_CHATBOT_MODEL_RETRY_MAX_SECONDS", "10"))
+    model_retry_budget_seconds: float = float(
+        os.getenv("SUPPORT_CHATBOT_MODEL_RETRY_BUDGET_SECONDS", "25")
+    )
+    prompt_cache_enabled: bool = _flag("SUPPORT_CHATBOT_PROMPT_CACHE_ENABLED", True)
+    runtime_session_cache_max: int = int(os.getenv("SUPPORT_CHATBOT_SESSION_CACHE_MAX", "2000"))
+    runtime_session_cache_ttl_seconds: int = int(
+        os.getenv("SUPPORT_CHATBOT_SESSION_CACHE_TTL_SECONDS", "1800")
+    )
     absence_demo_mode: bool = _flag("SUPPORT_CHATBOT_ABSENCE_DEMO_MODE")
     approval_reminder_seconds: int = int(os.getenv("SUPPORT_CHATBOT_APPROVAL_REMINDER_SECONDS", "3600"))
     approval_escalation_seconds: int = int(os.getenv("SUPPORT_CHATBOT_APPROVAL_ESCALATION_SECONDS", "7200"))

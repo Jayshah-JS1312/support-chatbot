@@ -4,14 +4,25 @@ Reads OPENAI_API_KEY and OPENAI_BASE_URL from .env. The base URL points at
 the class LLM proxy, which speaks the OpenAI chat-completions API.
 """
 
+import hashlib
 import os
+import random
+import threading
 import time
 
 from dotenv import load_dotenv
-from openai import OpenAI, RateLimitError
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    BadRequestError,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
 
 from support_chatbot import observe
 from support_chatbot import pricing
+from support_chatbot.auth import current_identity
 from support_chatbot.config import settings
 
 load_dotenv()
@@ -41,41 +52,103 @@ def client():
     return _client
 
 
-RATE_LIMIT_TRIES = 6
+class ModelCapacityError(RuntimeError):
+    """The process is at its configured model-call concurrency limit."""
+
+
+_model_slots = threading.BoundedSemaphore(max(1, settings.model_max_concurrency))
+_cache_capability_lock = threading.Lock()
+_prompt_cache_supported = True
+
+
+def _retry_after(error):
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", {}) or {}
+    value = headers.get("retry-after") or headers.get("Retry-After")
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _cache_key():
+    """Keep provider cache routing stable without disclosing a customer ID."""
+    identity = current_identity()
+    subject = identity.user_id if identity else "anonymous"
+    digest = hashlib.sha256(f"ami-prompt-v1:{subject}".encode()).hexdigest()[:32]
+    return f"ami-v1-{digest}"
 
 
 def _call(kwargs):
-    """One API call, waiting out the proxy when we ask too fast.
-
-    The class proxy allows 60 requests a minute. That is generous for a
-    person typing and nowhere near enough for an eval suite firing turns
-    back to back, which is how a 429 first showed up: as fifteen agent
-    "failures" that were nothing of the sort. A rate limit is not an error
-    to report, it is a queue to join.
-    """
-    for attempt in range(RATE_LIMIT_TRIES):
-        try:
-            return client().chat.completions.create(**kwargs)
-        except RateLimitError as e:
-            # Two different things arrive as a 429, and only one is worth
-            # waiting out. "Slow down" clears in under a minute. "This
-            # key's budget is used up" never clears, and retrying it buys
-            # a minute of silence before the identical failure — which is
-            # exactly how a finished eval run looks like a hung one.
-            if "insufficient_quota" in str(e) or "budget" in str(e):
-                raise
-            if attempt == RATE_LIMIT_TRIES - 1:
-                raise
-            wait = 2 ** (attempt + 1)      # 2, 4, 8, 16, 32 — a minute in all,
-                                           # which is the window being enforced
-            observe.log("llm", model=kwargs.get("model"), ms=0,
-                        error=f"rate limited, waiting {wait}s")
-            time.sleep(wait)
+    """Call the provider with bounded concurrency and a bounded retry budget."""
+    acquired = _model_slots.acquire(timeout=settings.model_acquire_timeout_seconds)
+    if not acquired:
+        observe.log("model_capacity", outcome="rejected")
+        raise ModelCapacityError("model_concurrency_limit_reached")
+    started = time.monotonic()
+    transient = (RateLimitError, APIConnectionError, APITimeoutError, InternalServerError)
+    try:
+        global _prompt_cache_supported
+        for attempt in range(max(1, settings.model_retry_attempts)):
+            try:
+                call_kwargs = dict(kwargs)
+                with _cache_capability_lock:
+                    cache_supported = _prompt_cache_supported
+                if not cache_supported:
+                    call_kwargs.pop("prompt_cache_key", None)
+                    call_kwargs.pop("safety_identifier", None)
+                try:
+                    return client().chat.completions.create(**call_kwargs)
+                except BadRequestError as error:
+                    message = str(error).lower()
+                    optional = ("prompt_cache_key", "safety_identifier")
+                    if not any(field in message for field in optional):
+                        raise
+                    # OpenAI-compatible proxies can lag the official schema.
+                    # Disable optional cache routing for this process and retry
+                    # the same call without weakening any safety behavior.
+                    with _cache_capability_lock:
+                        _prompt_cache_supported = False
+                    observe.log("prompt_cache", outcome="unsupported_by_provider")
+                    for field in optional:
+                        call_kwargs.pop(field, None)
+                    return client().chat.completions.create(**call_kwargs)
+            except transient as error:
+                # Quota exhaustion is not transient. Retrying it only delays a
+                # truthful failure and adds load during an outage.
+                if isinstance(error, RateLimitError) and (
+                    "insufficient_quota" in str(error) or "budget" in str(error).lower()
+                ):
+                    raise
+                if attempt == max(1, settings.model_retry_attempts) - 1:
+                    raise
+                server_delay = _retry_after(error)
+                exponential = min(
+                    settings.model_retry_max_seconds,
+                    settings.model_retry_base_seconds * (2 ** attempt),
+                )
+                wait = server_delay if server_delay is not None else exponential
+                wait = min(settings.model_retry_max_seconds, wait + random.uniform(0, wait * 0.25))
+                if time.monotonic() - started + wait > settings.model_retry_budget_seconds:
+                    raise
+                observe.log(
+                    "llm_retry",
+                    model=kwargs.get("model"),
+                    attempt=attempt + 1,
+                    delay_ms=round(wait * 1000),
+                    error=type(error).__name__,
+                )
+                time.sleep(wait)
+    finally:
+        _model_slots.release()
 
 
 def complete(messages, tools=None, model=MODEL, temperature=0.3):
     """One model call, timed and logged. Everything goes through here."""
     kwargs = {"model": model, "messages": messages, "temperature": temperature}
+    if settings.prompt_cache_enabled:
+        kwargs["prompt_cache_key"] = _cache_key()
+        kwargs["safety_identifier"] = _cache_key()
     if tools:
         kwargs["tools"] = tools
 

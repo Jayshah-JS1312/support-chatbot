@@ -2,6 +2,7 @@
 
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -56,6 +57,36 @@ def test_customer_resources_require_owners_and_rls_is_enabled():
         assert nullable == []
         assert len(rls) == 9
         assert all(row["relrowsecurity"] for row in rls)
+    finally:
+        repository.close()
+
+
+def test_concurrent_conversation_deletes_serialize_memory_rebuilds():
+    repository = PostgresRepository(os.environ.get("DATABASE_URL"))
+    identity, _ = repository.login("raj@example.com", "RajDemo!2026")
+    session_ids = [f"concurrent-delete-{uuid.uuid4().hex}" for _ in range(12)]
+    token = set_identity(identity)
+    try:
+        for sid in session_ids:
+            repository.create_session(sid, {"orders": {}, "actions": [], "failures": []})
+    finally:
+        reset_identity(token)
+
+    def remove(sid):
+        thread_token = set_identity(identity)
+        try:
+            return repository.delete_conversation(sid)
+        finally:
+            reset_identity(thread_token)
+
+    try:
+        with ThreadPoolExecutor(max_workers=12) as executor:
+            assert all(executor.map(remove, session_ids))
+        token = set_identity(identity)
+        try:
+            assert all(not repository.session_exists(sid) for sid in session_ids)
+        finally:
+            reset_identity(token)
     finally:
         repository.close()
 

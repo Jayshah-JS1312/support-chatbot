@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from psycopg_pool import PoolTimeout, TooManyRequests
 
 from support_chatbot import observe
 from support_chatbot.api.routes import (
@@ -180,6 +181,19 @@ def create_app(runtime_state=None):
     async def http_error(request: Request, error: HTTPException):
         code = "not_found" if error.status_code == 404 else "http_error"
         return _error(request, error.status_code, code, str(error.detail))
+
+    @app.exception_handler(PoolTimeout)
+    @app.exception_handler(TooManyRequests)
+    async def database_capacity_error(request: Request, error: Exception):
+        observe.log("database_capacity", outcome="rejected", error=type(error).__name__)
+        response = _error(
+            request,
+            503,
+            "database_busy",
+            "The service is temporarily busy. Please retry shortly.",
+        )
+        response.headers["Retry-After"] = "2"
+        return response
 
     @app.exception_handler(Exception)
     async def unhandled_error(request: Request, error: Exception):

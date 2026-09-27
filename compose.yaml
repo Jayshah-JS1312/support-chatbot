@@ -14,6 +14,8 @@ services:
       retries: 20
     volumes:
       - support-chatbot-postgres:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
     restart: unless-stopped
 
   migrate:
@@ -38,6 +40,11 @@ services:
       SUPPORT_CHATBOT_SECURE_COOKIES: "false"
       # Accelerated Phase 7 demonstration: remind 60s, escalate 120s, expire 300s.
       SUPPORT_CHATBOT_ABSENCE_DEMO_MODE: "true"
+      SUPPORT_CHATBOT_LOCAL_WORKFLOW_WORKERS: "4"
+      SUPPORT_CHATBOT_LOCAL_WORKFLOW_QUEUE_MAX: "2000"
+      SUPPORT_CHATBOT_WORKFLOW_RECOVERY_SCAN_SECONDS: "5"
+      SUPPORT_CHATBOT_MODEL_MAX_CONCURRENCY: "4"
+      SUPPORT_CHATBOT_DB_POOL_MAX: "10"
       DATABASE_URL: postgresql://support_chatbot:support_chatbot@postgres:5432/support_chatbot
     ports:
       - "8000:8000"

@@ -4,6 +4,8 @@ import json
 import threading
 import time
 import uuid
+import weakref
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from support_chatbot import UI_DIR
@@ -48,10 +50,39 @@ class RuntimeState:
         self.repository = repository or get_repository()
         self.workflow = workflow or WorkflowCoordinator(self.repository)
         self.longterm = LongTermMemory(self.repository)
-        self.sessions = {}
+        # This is only a read-through cache. PostgreSQL remains the source of
+        # truth, so idle conversations can be evicted without losing memory.
+        self.sessions = OrderedDict()
+        self.session_access = {}
         self.session_lock = threading.RLock()
-        self.turn_locks = {}
+        # A weak registry prevents one lock object per historical conversation
+        # from accumulating forever while preserving per-conversation locking
+        # for every active caller holding a strong reference.
+        self.turn_locks = weakref.WeakValueDictionary()
         self.started_at = time.time()
+
+    def _touch(self, sid):
+        self.session_access[sid] = time.monotonic()
+        self.sessions.move_to_end(sid)
+
+    def _prune_session_cache(self, keep=None):
+        now = time.monotonic()
+        ttl = max(1, settings.runtime_session_cache_ttl_seconds)
+        expired = [
+            sid for sid, touched in self.session_access.items()
+            if sid != keep and now - touched > ttl
+        ]
+        for sid in expired:
+            self.sessions.pop(sid, None)
+            self.session_access.pop(sid, None)
+        limit = max(1, settings.runtime_session_cache_max)
+        while len(self.sessions) > limit:
+            sid = next(iter(self.sessions))
+            if sid == keep and len(self.sessions) > 1:
+                self.sessions.move_to_end(sid)
+                continue
+            self.sessions.pop(sid, None)
+            self.session_access.pop(sid, None)
 
     @staticmethod
     def new_session(user_id=None, user_email=None):
@@ -98,6 +129,8 @@ class RuntimeState:
                     )
                     created = True
                 self.turn_locks[sid] = threading.RLock()
+            self._touch(sid)
+            self._prune_session_cache(keep=sid)
             return SessionContext(sid, self.sessions[sid], stale, created)
 
     def create_session(self, user_id, user_email):
@@ -114,6 +147,7 @@ class RuntimeState:
         """Evict a deleted durable conversation from process-local state."""
         with self.session_lock:
             self.sessions.pop(sid, None)
+            self.session_access.pop(sid, None)
             self.turn_locks.pop(sid, None)
 
     def reload_session(self, sid, user_id):
@@ -128,6 +162,8 @@ class RuntimeState:
                 "work": WorkingMemory.from_dict(persisted["work"]),
                 "user_id": user_id,
             }
+            self._touch(sid)
+            self._prune_session_cache(keep=sid)
             return self.sessions[sid]
 
     def append_user_turn(self, sid, user_id, text):
@@ -150,6 +186,8 @@ class RuntimeState:
         with self.session_lock:
             user_id = self.sessions.get(sid, {}).get("user_id")
             self.sessions[sid] = self.new_session(user_id)
+            self._touch(sid)
+            self._prune_session_cache(keep=sid)
             self.turn_locks.setdefault(sid, threading.RLock())
             self.repository.reset_session(sid, self.sessions[sid]["work"].to_dict())
             return self.sessions[sid]

@@ -2,6 +2,7 @@
 
 import pytest
 from fastapi.testclient import TestClient
+from psycopg_pool import PoolTimeout
 
 from support_chatbot import dashboard
 from support_chatbot.api.app import create_app
@@ -61,6 +62,21 @@ def test_health_readiness_remain_available_but_metrics_require_admin(api_client)
     assert browser_metrics.headers["location"] == "/monitoring"
     assert 'href="/metrics"' not in dashboard.PAGE
     assert "Operations overview" in dashboard.PAGE
+
+
+def test_database_pool_saturation_returns_retryable_structured_error(api_client, monkeypatch):
+    client, runtime = api_client
+    monkeypatch.setattr(
+        runtime.repository,
+        "list_conversations",
+        lambda *args, **kwargs: (_ for _ in ()).throw(PoolTimeout("pool exhausted")),
+    )
+
+    response = client.get("/conversations")
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "2"
+    assert response.json()["error"]["code"] == "database_busy"
 
 
 def test_customer_page_mints_securely_scoped_session_cookie(api_client):
