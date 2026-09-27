@@ -185,7 +185,9 @@ SCHEMAS = [
           ["order_id"]),
 
     _tool("start_return",
-          "Preview a return for a delivered order. Never starts the return. The "
+          "Preview a physical return for a delivered order. Do not use this for "
+          "an existing, short, partial, duplicate, or disputed refund; escalate "
+          "those refund corrections to human support. Never starts the return. The "
           "confirmed proposal still requires human approval before execution.",
           {"order_id": {"type": "string", "description": "Order number"},
            "reason": {"type": "string",

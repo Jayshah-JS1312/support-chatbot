@@ -202,7 +202,22 @@ def _customer_request(row, *, created=False, enqueued=None):
     if row.get("last_error") and row["status"] in {"RECEIVED", "QUEUED"}:
         result["retrying"] = True
     if public_state == "COMPLETED":
-        result["reply"] = row.get("draft_content")
+        execution = dict(row.get("execution_result") or {})
+        if action_name == "cancel_order" and execution.get("cancelled"):
+            amount = float(execution.get("refund_amount") or 0)
+            result["reply"] = (
+                f"Order {row.get('order_id')} was cancelled successfully. "
+                f"A ${amount:.2f} refund will be sent to the original payment method."
+            )
+        elif action_name == "start_return" and execution.get("rma"):
+            amount = float(execution.get("refund_amount") or 0)
+            result["reply"] = (
+                f"Your return was started successfully under {execution['rma']}. "
+                f"The eligible refund amount is ${amount:.2f}; it will be processed "
+                "according to the return policy after the item is received."
+            )
+        else:
+            result["reply"] = row.get("draft_content")
     elif public_state == "REJECTED":
         result["reply"] = "A support specialist rejected this resolution. No action was taken."
     elif public_state == "EXPIRED" or row["status"] == "COMPLETED_WITHOUT_ACTION":

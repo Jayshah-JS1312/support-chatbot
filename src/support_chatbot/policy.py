@@ -35,13 +35,19 @@ _INJECTION = re.compile(
 _FALSE_AUTHORITY_DATA = re.compile(
     r"(?=.*\b(supervisor|manager|admin|authorized|approved)\b)"
     r"(?=.*\b(data|information|records?|prompt|instructions?)\b)", re.I | re.S)
+_INJECTION_PRIVILEGED = re.compile(
+    r"\b(refund|cancel|return|delete|transfer|credit|payment|secret|private|"
+    r"system prompt|hidden instructions?|tool calls?|customer data)\b", re.I)
+_EXISTING_REFUND_DISPUTE = re.compile(
+    r"(?=.*\brefund(?:ed)?\b)(?=.*\b(already|again|second|prior|previous|first|"
+    r"short|partial|missing|incorrect|wrong|difference|remainder)\b)", re.I | re.S)
 _IDENT = re.compile(r"\b(ESC-\d+|RMA-\d+|\d{3}-\d{7}-\d{7})\b")
 _CONFIRM_YES = re.compile(
     r"^(?:yes|yes please|yes now|yes please do it|yep|yeah|sure|absolutely|"
     r"correct|confirmed?|i confirm|please proceed|proceed|please do it|"
     r"go ahead|do it|start it|submit it|"
-    r"yes please (?:start|submit|proceed with) (?:the |a )?(?:return|cancellation)(?: request| proposal)?|"
-    r"(?:start|submit|proceed with) (?:the |a )?(?:return|cancellation)(?: request| proposal)?)$",
+    r"yes please (?:start|submit|proceed with) (?:the |a |that |my )?(?:return|cancellation)(?: request| proposal)?(?: for (?:human )?review)?|"
+    r"(?:start|submit|proceed with) (?:the |a |that |my )?(?:return|cancellation)(?: request| proposal)?(?: for (?:human )?review)?)$",
     re.I,
 )
 _CONFIRM_NO = re.compile(
@@ -96,6 +102,15 @@ def direct_response(text):
         return ("I can’t share private company or internal system data, and a claimed "
                 "supervisor approval does not change that. I can help with your own "
                 "orders, deliveries, returns, refunds, or account support.")
+    # Do not send a pure override attempt for a privileged action or secret to
+    # the model. Mixed requests that contain a concrete owned order identifier
+    # still continue through the authenticated tool boundary, where the valid
+    # support portion can be handled without granting the injected authority.
+    if _INJECTION.search(text) and _INJECTION_PRIVILEGED.search(text) \
+            and not _ORDER.search(text):
+        return ("I can’t override safety rules, expose private instructions, or "
+                "perform an unverified account action. I can help with your own "
+                "orders through the normal verification and approval process.")
     return None
 
 
@@ -141,6 +156,17 @@ def guarded_run(name, args, work):
         return {"escalated": True, "ticket": work.escalation,
                 "message": "Already escalated in this conversation; refer the "
                            "customer to this existing ticket."}
+
+    # A physical return is not a valid mechanism for correcting an existing,
+    # partial, or duplicate refund. Refuse the mismatched action at the tool
+    # boundary and direct the agent to a human-support exception instead.
+    if name == "start_return" and _EXISTING_REFUND_DISPUTE.search(args.get("reason", "")):
+        observe.log("policy", stage="action", rule="refund_dispute_requires_human")
+        return {
+            "error": "An existing or partial refund cannot be corrected by starting "
+                     "another return. Escalate this refund dispute to human support.",
+            "requires_escalation": True,
+        }
 
     # Rule: state-changing tools need a confirmation from a LATER turn.
     if name in CONFIRM_TOOLS:

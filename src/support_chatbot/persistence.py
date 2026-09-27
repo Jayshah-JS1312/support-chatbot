@@ -540,11 +540,14 @@ class PostgresRepository:
         with self.connection() as conn:
             row = conn.execute(
                 """select r.*, c.browser_session_id, d.content as draft_content, d.proposed_action,
-                a.status as approval_status, a.decision_reason, a.expires_at
+                a.status as approval_status, a.decision_reason, a.expires_at,
+                e.result_payload as execution_result
                 from public.support_requests r
                 left join public.conversations c on c.id=r.conversation_id
                 left join public.resolution_drafts d on d.support_request_id=r.id
                 left join public.approval_tasks a on a.resolution_draft_id=d.id
+                left join public.action_executions e on e.support_request_id=r.id
+                    and e.status='succeeded'
                 where r.id=%s and (%s='admin' or r.user_id=%s)""",
                 (request_id, identity.role, identity.user_id),
             ).fetchone()
@@ -555,11 +558,14 @@ class PostgresRepository:
         with self.connection() as conn:
             rows = conn.execute(
                 """select r.*,c.browser_session_id,d.content as draft_content,d.proposed_action,d.action_name,
-                a.status as approval_status,a.decision_reason,a.expires_at
+                a.status as approval_status,a.decision_reason,a.expires_at,
+                e.result_payload as execution_result
                 from public.support_requests r
                 left join public.conversations c on c.id=r.conversation_id
                 left join public.resolution_drafts d on d.support_request_id=r.id
                 left join public.approval_tasks a on a.resolution_draft_id=d.id
+                left join public.action_executions e on e.support_request_id=r.id
+                    and e.status='succeeded'
                 where (%s='admin' or r.user_id=%s)
                 order by r.created_at desc limit %s""",
                 (identity.role, identity.user_id, limit),
@@ -2001,6 +2007,7 @@ class InMemoryRepository:
         key = f"support-request:{request_id}:execute"
         if key in self.action_executions: return copy.deepcopy(row)
         action = row.get("action_name")
+        result = {"response": row.get("draft_content")}
         if action and action != "send_resolution":
             computed = action_hash(action, row["action_arguments"], row["customer_consequences"], row["policy_evidence"], row["order_version"])
             if not row.get("customer_confirmed_at") or computed != row.get("action_hash") or computed != row.get("approved_action_hash"):
@@ -2018,7 +2025,14 @@ class InMemoryRepository:
                 return copy.deepcopy(row)
             order["status"] = "cancelled" if action == "cancel_order" else "return started"
             order["version"] += 1
-        self.action_executions[key] = {"status": "succeeded", "response": row.get("draft_content")}
+            if action == "cancel_order":
+                result = {"cancelled": True, "refund_amount": float(order["price"])}
+            else:
+                rma = f"RMA-{len(self.returns) + 1001}"
+                self.returns[rma] = {"order_id": order["id"], "status": "started"}
+                result = {"rma": rma, "refund_amount": float(order["price"])}
+        self.action_executions[key] = {"status": "succeeded", "result_payload": result}
+        row["execution_result"] = copy.deepcopy(result)
         if row["status"] == "EXECUTING":
             row["status"] = "COMPLETED"
             row["completed_at"] = datetime.now(timezone.utc).isoformat()

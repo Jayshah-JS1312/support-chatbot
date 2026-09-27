@@ -113,13 +113,17 @@ def load_customer_session(repository, auth_token, sid):
 
 
 @pytest.mark.parametrize("planner", ["react", "plan"])
+@pytest.mark.parametrize("confirmation", [
+    "Yes please start a return request.",
+    "Yes, please submit that return request for review.",
+])
 def test_one_yes_consumes_return_confirmation_and_opens_one_review(
-    planner, fake_llm,
+    planner, confirmation, fake_llm,
 ):
     repository = get_repository()
     repository.enforce_auth = True
     request, sid, auth_token = pending_return_request(
-        repository, planner, "Yes please start a return request.",
+        repository, planner, confirmation,
     )
     coordinator = WorkflowCoordinator(repository, Dispatcher())
     try:

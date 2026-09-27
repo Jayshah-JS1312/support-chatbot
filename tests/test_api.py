@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from support_chatbot import dashboard
 from support_chatbot.api.app import create_app
+from support_chatbot.api.routes.customer import _customer_request
 from support_chatbot.api.runtime import RuntimeState
 from support_chatbot.persistence import get_repository
 from support_chatbot.workflow import WorkflowCoordinator
@@ -514,3 +515,29 @@ def test_customer_receives_forbidden_on_internal_routes(api_client):
     response = client.get("/monitoring")
 
     assert response.status_code == 403
+
+
+def test_completed_privileged_actions_show_execution_outcome_not_pending_draft():
+    base = {
+        "id": "request-id", "reference_number": "REQ-1001",
+        "status": "COMPLETED", "summary": "confirmed action",
+        "draft_content": "No account action has been taken yet.",
+        "approval_status": "approved", "order_id": "112-1111111-1111111",
+        "metadata": {},
+    }
+
+    returned = _customer_request(base | {
+        "action_name": "start_return",
+        "execution_result": {"rma": "RMA-1001", "refund_amount": 348.0},
+    })
+    cancelled = _customer_request(base | {
+        "action_name": "cancel_order",
+        "execution_result": {"cancelled": True, "refund_amount": 149.99},
+    })
+
+    assert "started successfully" in returned["reply"]
+    assert "RMA-1001" in returned["reply"]
+    assert "$348.00" in returned["reply"]
+    assert "cancelled successfully" in cancelled["reply"]
+    assert "$149.99" in cancelled["reply"]
+    assert "No account action" not in returned["reply"]
