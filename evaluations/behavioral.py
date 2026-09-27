@@ -156,6 +156,14 @@ CASES = [
 ]
 
 
+def isolated_longterm_memory():
+    """Return evaluation-only memory that cannot reach customer records."""
+    from support_chatbot.memory import LongTermMemory
+    from support_chatbot.persistence import InMemoryRepository
+
+    return LongTermMemory(InMemoryRepository())
+
+
 def run_case(case, planner_name):
     """One fresh agent, one case. Returns what happened, not whether it passed."""
     from support_chatbot import store, tools, memory, planner, plan_execute, agent_profile, policy, observe
@@ -186,7 +194,11 @@ def run_case(case, planner_name):
                   "chains_of_thought": (planner.chains_of_thought, planner.CHAINS_OF_THOUGHT_RULES)}[planner_name]
     convo = memory.ConversationMemory(agent_profile.system_prompt() + rules)
     work = memory.WorkingMemory()
-    longterm = memory.LongTermMemory("/dev/null")    # evals never touch real customers
+    # Evaluation memory must be isolated from the configured production
+    # repository. LongTermMemory now accepts a repository (the historical
+    # file-path argument is no longer valid), so give every case a fresh
+    # in-memory implementation and never touch real customer records.
+    longterm = isolated_longterm_memory()
 
     seq0 = observe.SEQ
     t0 = time.perf_counter()
