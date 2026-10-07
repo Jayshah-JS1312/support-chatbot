@@ -214,6 +214,17 @@ class TestWorkingMemoryRecords:
         w.record("cancel_order", {"order_id": "o1"}, result)
         assert len(w.failures) == 0
 
+    def test_dependency_outage_does_not_poison_refusal_memory(self):
+        w = WorkingMemory()
+        result = {
+            "error": "Policy knowledge is temporarily unavailable.",
+            "temporarily_unavailable": True,
+        }
+
+        w.record("search_knowledge", {"question": "return policy"}, result)
+
+        assert w.failures == []
+
     def test_track_package_does_not_record_events(self):
         """track_package result includes events, but they're not stored."""
         w = WorkingMemory()
@@ -223,6 +234,80 @@ class TestWorkingMemoryRecords:
         }
         w.record("track_package", {"order_id": "o1"}, result)
         assert "events" not in w.orders.get("o1", {})
+
+    def test_order_tool_sets_verified_active_order(self):
+        w = WorkingMemory()
+        w.record("track_package", {"order_id": "o1"}, {
+            "carrier": "UPS", "events": [],
+        })
+
+        assert w.active_order_id == "o1"
+
+    def test_unambiguous_assistant_offer_sets_active_order(self):
+        w = WorkingMemory()
+        w.orders = {
+            "112-1": {"item": "Sony WH-1000XM5 Headphones", "status": "delivered"},
+            "112-2": {"item": "Instant Pot Duo 6qt", "status": "shipped"},
+        }
+
+        w.update_focus_from_reply(
+            "You have Sony headphones and an Instant Pot Duo 6qt. "
+            "I can track the Instant Pot if you would like."
+        )
+
+        assert w.active_order_id == "112-2"
+
+    def test_ambiguous_product_offer_does_not_guess_active_order(self):
+        w = WorkingMemory()
+        w.orders = {
+            "112-1": {"item": "USB-C Cable 1 m", "status": "shipped"},
+            "112-2": {"item": "USB-C Cable 2 m", "status": "delivered"},
+        }
+
+        w.update_focus_from_reply("Which USB-C cable would you like me to track?")
+
+        assert w.active_order_id is None
+
+    def test_ambiguous_product_offer_clears_stale_active_order(self):
+        w = WorkingMemory()
+        w.orders = {
+            "112-1": {"item": "USB-C Cable 1 m", "status": "shipped"},
+            "112-2": {"item": "USB-C Cable 2 m", "status": "delivered"},
+        }
+        w.active_order_id = "112-1"
+
+        w.update_focus_from_reply("Which USB-C cable would you like me to return?")
+
+        assert w.active_order_id is None
+
+    def test_unrelated_number_does_not_select_an_order(self):
+        w = WorkingMemory()
+        w.orders = {
+            "ORDER-1": {"item": "USB-C Cable 2 m"},
+            "ORDER-2": {"item": "Wireless Mouse"},
+        }
+
+        w.update_focus_from_reply("You can return it in 2 days if the policy allows.")
+
+        assert w.active_order_id is None
+
+    def test_failed_unknown_order_is_not_treated_as_verified_context(self):
+        w = WorkingMemory()
+
+        w.record("get_order", {"order_id": "ORDER-NOT-MINE"}, {"error": "not found"})
+
+        assert w.active_order_id is None
+
+    def test_explicit_variant_can_disambiguate_similar_products(self):
+        w = WorkingMemory()
+        w.orders = {
+            "112-1": {"item": "USB-C Cable 1 m", "status": "shipped"},
+            "112-2": {"item": "USB-C Cable 2 m", "status": "delivered"},
+        }
+
+        w.update_focus_from_reply("I can help return the delivered 2 m cable.")
+
+        assert w.active_order_id == "112-2"
 
 
 class TestWorkingMemoryBrief:
@@ -245,6 +330,16 @@ class TestWorkingMemoryBrief:
         brief = w.brief()
         assert "o1" in brief
         assert "shipped" in brief
+
+    def test_brief_includes_active_order_context(self):
+        w = WorkingMemory()
+        w.orders["o1"] = {"item": "Widget", "status": "shipped"}
+        w.active_order_id = "o1"
+
+        brief = w.brief()
+
+        assert "CURRENT ORDER CONTEXT: o1 (Widget)" in brief
+        assert "Resolve pronouns" in brief
 
     def test_brief_includes_actions_section(self):
         w = WorkingMemory()
@@ -274,12 +369,14 @@ class TestWorkingMemoryPersistence:
         w = WorkingMemory()
         w.customer_email = "test@example.com"
         w.orders = {"o1": {"status": "shipped"}}
+        w.active_order_id = "o1"
         w.actions = ["Did something"]
         w.failures = ["Something failed"]
         w.escalation = "ESC-123"
         d = w.to_dict()
         assert d["customer_email"] == "test@example.com"
         assert "o1" in d["orders"]
+        assert d["active_order_id"] == "o1"
         assert "Did something" in d["actions"]
         assert "Something failed" in d["failures"]
         assert d["escalation"] == "ESC-123"
@@ -288,6 +385,7 @@ class TestWorkingMemoryPersistence:
         data = {
             "customer_email": "test@example.com",
             "orders": {"o1": {"status": "delivered"}},
+            "active_order_id": "o1",
             "actions": ["Cancelled o1"],
             "failures": ["Something refused"],
             "escalation": "ESC-456",
@@ -295,6 +393,7 @@ class TestWorkingMemoryPersistence:
         w = WorkingMemory.from_dict(data)
         assert w.customer_email == "test@example.com"
         assert w.orders == {"o1": {"status": "delivered"}}
+        assert w.active_order_id == "o1"
         assert w.escalation == "ESC-456"
 
     def test_from_dict_with_missing_fields(self):
@@ -302,7 +401,16 @@ class TestWorkingMemoryPersistence:
         w = WorkingMemory.from_dict(data)
         assert w.customer_email == "test@example.com"
         assert w.orders == {}
+        assert w.active_order_id is None
         assert w.failures == []
+
+    def test_from_dict_discards_active_order_that_was_not_verified(self):
+        w = WorkingMemory.from_dict({
+            "orders": {"owned": {"item": "Widget"}},
+            "active_order_id": "not-owned",
+        })
+
+        assert w.active_order_id is None
 
 
 class TestConversationMemoryPersistence:

@@ -303,6 +303,7 @@ class WorkflowCoordinator:
                 longterm=LongTermMemory(self.repository), extra=note,
             )
             safe = policy.check_output(raw, work, safe_text)
+            work.update_focus_from_reply(safe)
             conversation.persist_safe_reply(raw, safe)
             self.repository.save_session(
                 context["session_id"], conversation.history, work.to_dict(), context["planner"]

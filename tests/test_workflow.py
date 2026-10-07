@@ -112,6 +112,48 @@ def load_customer_session(repository, auth_token, sid):
         reset_identity(identity_token)
 
 
+def test_draft_persists_unambiguous_order_focus_for_the_next_request(fake_llm):
+    repository = get_repository()
+    repository.enforce_auth = True
+    identity, auth_token = repository.login("raj@example.com", "RajDemo!2026")
+    identity_token = set_identity(identity)
+    sid = "focus-persists-after-offer"
+    try:
+        work = WorkingMemory()
+        work.customer_email = identity.email
+        work.turn = 1
+        conversation = ConversationMemory(agent_profile.system_prompt())
+        conversation.add_user("List my current orders")
+        repository.create_session(sid, work.to_dict(), identity.user_id)
+        repository.save_session(sid, conversation.history, work.to_dict(), "react")
+        request, _ = repository.create_support_request(
+            "List my current orders", "react", "focus-persist-key", sid,
+        )
+    finally:
+        reset_identity(identity_token)
+
+    fake_llm.script(
+        Reply(tool_calls=[tool_call(
+            "find_orders", email="raj@example.com",
+            thought="List the authenticated customer's orders.",
+        )]),
+        Reply(content=(
+            "You have Sony headphones and an Instant Pot Duo 6qt. "
+            "I can track the Instant Pot if you would like."
+        )),
+    )
+    coordinator = WorkflowCoordinator(repository, Dispatcher())
+    try:
+        result = coordinator.draft(request["id"])
+        persisted = load_customer_session(repository, auth_token, sid)
+
+        assert result == {"duplicate": False, "state": "COMPLETED"}
+        assert persisted["work"]["active_order_id"] == "112-2222222-2222222"
+    finally:
+        coordinator.close()
+        repository.logout(auth_token)
+
+
 @pytest.mark.parametrize("planner", ["react", "plan"])
 @pytest.mark.parametrize("confirmation", [
     "Yes please start a return request.",
