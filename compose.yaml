@@ -73,6 +73,27 @@ services:
         condition: service_completed_successfully
     restart: "no"
 
+  trust-study-seed:
+    profiles: ["trust-study"]
+    image: postgres:16-alpine
+    environment:
+      PGPASSWORD: support_chatbot
+    command:
+      - psql
+      - --host=postgres
+      - --username=support_chatbot
+      - --dbname=support_chatbot
+      - --set=ON_ERROR_STOP=1
+      - --file=/fixtures/trust-study-seed.sql
+    volumes:
+      - ./test-data/trust-study-seed.sql:/fixtures/trust-study-seed.sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
 volumes:
   support-chatbot-postgres:
   support-chatbot-cache:

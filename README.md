@@ -159,7 +159,26 @@ Local demo sign-in accounts are:
 |---|---|---|
 | Customer | `raj@example.com` | `RajDemo!2026` |
 | Customer | `mei@example.com` | `MeiDemo!2026` |
+| Trust-study customer | `priya@example.com` | `PriyaTrust!2026` |
+| Trust-study customer | `noah@example.com` | `NoahTrust!2026` |
 | Admin | `admin@example.com` | `AdminDemo!2026` |
+
+Raj, Priya, and Noah have isolated, versioned order scenarios for the trust
+study. Their frozen states, prompts, and screenshot protocol are recorded
+in [`docs/trust-study/baseline.md`](docs/trust-study/baseline.md). Use a separate
+account for every participant when testing against one shared environment.
+
+The standard migrations do not create the two additional trust-study accounts
+in production. Install the frozen fixtures explicitly in a local Compose
+database before the study:
+
+```bash
+docker compose --profile trust-study run --rm trust-study-seed
+```
+
+The seed is additive and idempotent: it does not reset an existing password or
+overwrite an order whose state has changed. Use a fresh development database
+when you need the exact starting state again.
 
 ### Optional synthetic dataset
 
