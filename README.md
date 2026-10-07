@@ -243,6 +243,12 @@ python -m evaluations.golden --audit
 python -m evaluations.golden
 ```
 
+The frozen trust-study baseline, metric definitions, evidence flow, and exact
+Task 3 reproduction commands are documented in
+[`docs/trust-study/quantitative-baseline.md`](docs/trust-study/quantitative-baseline.md).
+Its versioned aggregate is generated from JUnit evidence, the paid golden run,
+and the 1,000-session local load report; raw live transcripts remain ignored.
+
 These live evaluations are intentionally excluded from default CI.
 
 The 20-journey frozen trust contract and its expected outcomes are documented in

@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import statistics
 import time
 
@@ -27,7 +28,8 @@ def percentile(values, fraction):
     if not values:
         return 0.0
     ordered = sorted(values)
-    return ordered[min(len(ordered) - 1, int((len(ordered) - 1) * fraction))]
+    index = min(len(ordered) - 1, max(0, math.ceil(len(ordered) * fraction) - 1))
+    return ordered[index]
 
 
 async def main():
@@ -39,6 +41,10 @@ async def main():
     parser.add_argument("--password", default="RajDemo!2026")
     parser.add_argument("--exercise-chat", action="store_true")
     parser.add_argument("--keep-conversations", action="store_true")
+    parser.add_argument(
+        "--slo-ms", type=float, default=2000,
+        help="Count virtual users whose complete request exceeds this latency",
+    )
     args = parser.parse_args()
     if args.users < 1 or args.concurrency < 1:
         parser.error("--users and --concurrency must be positive")
@@ -137,6 +143,8 @@ async def main():
             "p99": round(percentile(latencies, 0.99), 1),
             "mean": round(statistics.fmean(latencies), 1) if latencies else 0,
         },
+        "slo_ms": args.slo_ms,
+        "users_at_or_over_slo": sum(value >= args.slo_ms for value in latencies),
         "sample_failures": failures[:10],
     }
     print(json.dumps(result, indent=2))

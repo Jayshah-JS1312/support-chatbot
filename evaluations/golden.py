@@ -178,8 +178,17 @@ def judge(row, reply, observed, model):
 
     seq0 = observe.SEQ
     raw = chat([{"role": "user", "content": prompt}], model=model, temperature=0)
-    cost = sum(e.get("cost") or 0 for e in observe.EVENTS
-               if e.get("seq", 0) > seq0 and e["kind"] == "llm")
+    events = [e for e in observe.EVENTS
+              if e.get("seq", 0) > seq0 and e["kind"] == "llm"]
+    usage = {
+        "calls": len(events),
+        "tokens": sum(e.get("tokens") or 0 for e in events),
+        "tokens_in": sum(e.get("tokens_in") or 0 for e in events),
+        "tokens_out": sum(e.get("tokens_out") or 0 for e in events),
+        "cached_tokens": sum(e.get("cached") or 0 for e in events),
+        "cost": sum(e.get("cost") or 0 for e in events),
+        "ms": sum(e.get("ms") or 0 for e in events),
+    }
 
     verdict = _json(raw)
     for key in ("correct", "grounded"):
@@ -188,7 +197,7 @@ def judge(row, reply, observed, model):
         except (TypeError, ValueError):
             verdict[key] = 0.0
             verdict[key + "_why"] = f"judge returned no score: {raw[:80]}"
-    return verdict, cost
+    return verdict, usage
 
 
 def _json(text):
@@ -214,7 +223,7 @@ def run_row(row, planner_name, judge_model):
 
     facts, fact_fails = check_facts(row, r["reply"])
     recall, recall_fails = check_retrieval(row, r["observed"])
-    verdict, judge_cost = judge(row, r["reply"], r["observed"], judge_model)
+    verdict, judge_usage = judge(row, r["reply"], r["observed"], judge_model)
 
     fails = fact_fails + recall_fails
     for key in ("correct", "grounded"):
@@ -228,7 +237,14 @@ def run_row(row, planner_name, judge_model):
             "correct": verdict["correct"], "grounded": verdict["grounded"],
             "correct_why": verdict.get("correct_why", ""),
             "grounded_why": verdict.get("grounded_why", ""),
-            "score": sum(scored) / len(scored), "judge_cost": judge_cost,
+            "score": sum(scored) / len(scored),
+            "judge_calls": judge_usage["calls"],
+            "judge_tokens": judge_usage["tokens"],
+            "judge_tokens_in": judge_usage["tokens_in"],
+            "judge_tokens_out": judge_usage["tokens_out"],
+            "judge_cached_tokens": judge_usage["cached_tokens"],
+            "judge_cost": judge_usage["cost"],
+            "judge_ms": judge_usage["ms"],
             "fails": fails}
 
 
@@ -252,25 +268,57 @@ def audit(rows, judge_model):
     the table above is noise.
     """
     print(f"judge audit · {len(rows)} rows × 2 controls · {judge_model}\n")
-    own_scores, decoy_scores, apart, cost = [], [], [], 0.0
+    own_scores, decoy_scores, apart, cost, results = [], [], [], 0.0, []
     for i, row in enumerate(rows):
-        verdict, c = judge(row, row["reference"], [], judge_model)
-        cost += c
-        own = verdict["correct"]
+        own_error = None
+        try:
+            verdict, usage = judge(row, row["reference"], [], judge_model)
+            cost += usage["cost"]
+            own = verdict["correct"]
+            own_why = verdict.get("correct_why", "")
+        except Exception as error:  # preserve a failed audit instead of losing it
+            own, own_why = 0.0, f"judge error: {type(error).__name__}"
+            own_error = type(error).__name__
         own_scores.append(own)
 
         decoy, other = _decoy(rows, i), None
+        decoy_error = None
         if decoy:
-            v, c = judge(row, decoy, [], judge_model)
-            cost += c
-            other = v["correct"]
+            if own_error:
+                other, decoy_error = 1.0, own_error
+            else:
+                try:
+                    v, usage = judge(row, decoy, [], judge_model)
+                    cost += usage["cost"]
+                    other = v["correct"]
+                except Exception as error:  # a missing control result fails closed
+                    other = 1.0
+                    decoy_error = type(error).__name__
             decoy_scores.append(other)
             apart.append(other < own)
 
         ok = own == 1.0 and (other is None or other < own)
+        results.append({
+            "row": row["id"], "own_score": own, "decoy_score": other,
+            "separated": other is None or other < own, "passed": ok,
+            "error": decoy_error or (own_why if own_why.startswith("judge error:") else None),
+        })
         print(f" {'  ' if ok else '<-'} {row['id']:<22} own={own:<4} "
               f"decoy={'-' if other is None else other:<4}  "
-              f"{verdict.get('correct_why', '')[:42]}")
+              f"{own_why[:42]}")
+        if own_error or decoy_error:
+            # A provider outage invalidates the audit. Stop generating more
+            # paid retries and mark every unrun control as failed.
+            for remaining in rows[i + 1:]:
+                own_scores.append(0.0)
+                decoy_scores.append(1.0)
+                apart.append(False)
+                results.append({
+                    "row": remaining["id"], "own_score": None,
+                    "decoy_score": None, "separated": False, "passed": False,
+                    "error": "not run after provider failure",
+                })
+            break
 
     positive = sum(own_scores) / len(own_scores)
     negative = sum(decoy_scores) / len(decoy_scores) if decoy_scores else 0.0
@@ -278,7 +326,18 @@ def audit(rows, judge_model):
     print(f" unrelated references       {negative:.2f}  (want lower)")
     print(f" told apart                 {sum(apart)}/{len(apart)} rows  (want all)")
     print(f" judge cost ${cost:.3f}")
-    return positive >= 0.9 and all(apart)
+    passed = positive >= 0.9 and all(apart)
+    return {
+        "status": "passed" if passed else "failed",
+        "judge_model": judge_model,
+        "rows": len(rows),
+        "own_reference_score": positive,
+        "decoy_score": negative,
+        "separated_numerator": sum(apart),
+        "separated_denominator": len(apart),
+        "estimated_cost_usd": cost,
+        "results": results,
+    }
 
 
 def _decoy(rows, i):
@@ -315,6 +374,7 @@ def main():
     ap.add_argument("--judge-model", default=MODEL)
     ap.add_argument("--audit", action="store_true",
                     help="grade the reference answers, not the agent")
+    ap.add_argument("--audit-out", default="artifacts/evaluations/judge-audit.json")
     ap.add_argument("--out", default="artifacts/evaluations/golden.json")
     a = ap.parse_args()
 
@@ -323,7 +383,11 @@ def main():
         sys.exit(f"no rows match --only {a.only!r}")
 
     if a.audit:
-        sys.exit(0 if audit(rows, a.judge_model) else 1)
+        report = audit(rows, a.judge_model)
+        output = Path(a.audit_out)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report, indent=2) + "\n")
+        sys.exit(0 if report["status"] == "passed" else 1)
 
     print(f"{len(rows)} rows × {a.runs} run(s) · planner={a.planner} · "
           f"agent={MODEL} · judge={a.judge_model}\n")
@@ -344,6 +408,7 @@ def main():
         for f in dict.fromkeys(f for o in outs for f in o["fails"]):
             print(f"   - {f}")
         results.append({"row": row["id"], "planner": a.planner,
+                        "agent_model": MODEL, "judge_model": a.judge_model,
                         "passed": passed, "runs": a.runs, "outcomes": outs})
 
     flat = [o for r in results for o in r["outcomes"]]
