@@ -59,32 +59,84 @@ evaluations/           opt-in behavioral and model-judged evaluations
 scripts/               feedback and retrieval benchmarking utilities
 supabase/              versioned PostgreSQL schema and reproducible demo seed
 docs/                  architecture, deployment, and security guidance
-test-data/             ready-to-run manual conversation scenarios
+test-data/             manual conversation prompts and expected outcomes
 .github/workflows/     CI for deterministic checks
 ```
 
-## Local setup
+## Quick start: local Docker Compose
+
+Each contributor runs their own PostgreSQL database in Docker. You do **not**
+need a `DATABASE_URL` from the maintainer or a Supabase account to develop and
+test this project. You need Docker with Compose, and a model-provider key only
+if you want live Ami responses or live evaluations.
+
+From the repository root:
 
 ```bash
+cp .env.example .env
+docker compose up --build -d
+docker compose ps
+curl -fsS http://localhost:8000/healthz
+curl -fsS http://localhost:8000/readyz
+```
+
+Before starting, edit the new `.env` and set `OPENAI_API_KEY` plus an
+`OPENAI_BASE_URL` and `MODEL` that **match your provider account**. The example
+base URL targets the course provider; a key from a different provider needs
+that provider's compatible endpoint and model name. Keep `.env` private: it is
+Git-ignored and must never be committed. Without working model credentials,
+the deterministic checks still run, but live chat/evaluations will not produce
+normal model answers.
+
+Open <http://localhost:8000> after the readiness check succeeds. Compose
+starts PostgreSQL, waits for it to become healthy, applies pending versioned
+migrations, and starts the FastAPI app. The database URL is supplied to the
+containers by [`compose.yaml`](compose.yaml); you do not need to obtain or edit
+one for this path. QStash/Upstash credentials are **not** needed for local
+workflow testing: the app uses a local dispatcher. That dispatcher is not a
+production multi-instance queue.
+
+If startup fails, inspect `docker compose ps` and `docker compose logs app
+migrate postgres` (omit `-f` to avoid a continuously running log command).
+The Compose file publishes port 8000 on the host's interfaces and includes
+known demo credentials. Use it only on a trusted development machine; do not
+forward that port or expose this stack to the internet.
+`docker compose down` stops the stack but preserves the named PostgreSQL volume
+and your data. Do **not** run `docker compose down -v` unless you deliberately
+want to delete this local database and start over.
+
+### Where `DATABASE_URL` comes from
+
+| Where the application runs | PostgreSQL host in the URL | Who supplies it |
+|---|---|---|
+| Docker Compose app/migrations | `postgres:5432` | `compose.yaml` automatically |
+| Python on your laptop, database in Compose | `127.0.0.1:5432` | `.env.example` / your local `.env` |
+| Hosted deployment | Provider-specific host | Your own managed PostgreSQL or Supabase project |
+
+The hostname `postgres` resolves **inside** the Compose network only. The
+`127.0.0.1` URL works from your laptop because Compose publishes PostgreSQL on
+localhost. Hosted Supabase is optional for contributors and is not installed or
+provisioned by cloning this repository. Never share a production database URL
+or credentials in Git or chat.
+
+### Alternative: run Python on the host
+
+Start only the database in Docker, then use a local Python 3.11+ environment:
+
+```bash
+docker compose up -d postgres
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[dev]'
 cp .env.example .env
-```
-
-Set `OPENAI_API_KEY` and `DATABASE_URL` in `.env`. For asynchronous processing,
-also set the QStash token/signing keys and the application's public base URL.
-Apply migrations, then run
-either interface:
-
-```bash
 support-chatbot-migrate
 support-chatbot-web
-support-chatbot
 ```
 
-`support-chatbot-web` starts the FastAPI application through Uvicorn. For
-development tooling that expects an ASGI import string, use
+Use the host-style `DATABASE_URL` already in `.env.example`; do not change it
+to `@postgres` for this path. Configure the model provider in `.env` as above.
+`support-chatbot-web` runs Uvicorn; the optional terminal interface is
+`support-chatbot`. For tooling that expects an ASGI import string, use
 `uvicorn support_chatbot.web:app --host 127.0.0.1 --port 8000`.
 
 The browser UI is available at <http://127.0.0.1:8000>. When internal views are
@@ -136,25 +188,42 @@ non-hosted database target all pass validation.
 These credentials are test fixtures only. Replace or remove them before using
 the schema with real customer data.
 
-For demo customers, order numbers, and more than 30 test conversations, see
+For demo customers, order numbers, and manual test conversations, see
 [the manual testing guide](docs/manual-testing.md). Machine-readable scenarios
-are also available in [`test-data/chat-scenarios.json`](test-data/chat-scenarios.json).
+with account and human-review expectations are in
+[`test-data/chat-scenarios.json`](test-data/chat-scenarios.json).
 
 ## Validation
 
 ```bash
-pytest
+python -m pytest
 python -m support_chatbot.hitl_evals --check
+```
+
+These deterministic checks make no model calls. From a host virtualenv, start
+the Compose database and apply migrations as shown above before running tests
+that need PostgreSQL. PostgreSQL integration tests run only when `DATABASE_URL`
+is **exported in the shell** (a value in `.env` alone does not activate them):
+
+```bash
+export DATABASE_URL=postgresql://support_chatbot:support_chatbot@127.0.0.1:5432/support_chatbot
+python -m pytest
+```
+
+Use only a disposable development database for integration tests. When the
+variable is absent, PostgreSQL integration tests report as skipped. CI runs
+them against its own temporary PostgreSQL service.
+
+The following are optional **live-model** evaluations and can incur provider
+cost; run them only after configuring working model credentials:
+
+```bash
 python -m evaluations.behavioral --runs 1
 python -m evaluations.golden --audit
 python -m evaluations.golden
 ```
 
-`pytest` is deterministic and makes no model calls. PostgreSQL integration
-tests run when `DATABASE_URL` is exported and otherwise report as skipped.
-Everything under
-`evaluations/` calls the configured model provider, can incur cost, and is
-therefore intentionally excluded from default CI.
+These live evaluations are intentionally excluded from default CI.
 
 The deterministic HITL command is a release gate: it exits non-zero unless
 every blocking case that requires a human actually pauses. Its dashboard always
@@ -168,14 +237,8 @@ The pre-migration retrieval measurements are recorded in
 
 ## Deployment
 
-```bash
-docker compose up --build
-curl http://localhost:8000/healthz
-curl http://localhost:8000/readyz
-curl --cookie "ami_auth=<admin-session-token>" http://localhost:8000/metrics
-```
-
-Read [deployment](docs/deployment.md), [architecture](docs/architecture.md),
+The quick start above is for **local development**, not an internet-facing
+deployment. Read [deployment](docs/deployment.md), [architecture](docs/architecture.md),
 [scaling and load testing](docs/scaling.md), and [security](SECURITY.md) before
 exposing the service beyond localhost.
 
