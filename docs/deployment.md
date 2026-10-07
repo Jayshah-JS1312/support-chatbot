@@ -2,7 +2,8 @@
 
 ## Container
 
-1. Copy `.env.example` to `.env` and set the model credentials.
+1. Copy `.env.example` to `.env` and set model credentials matching your
+   provider's API endpoint and model. Do not commit `.env`.
 2. Run `docker compose up --build`.
 3. Verify `GET /healthz` returns `{"status":"ok"}` and `GET /readyz`
    reports `ready`.
@@ -11,8 +12,13 @@ Compose starts PostgreSQL, runs every pending migration, and only then starts
 the FastAPI/Uvicorn container as an unprivileged user. PostgreSQL uses a named
 volume, so orders, conversations, messages, and memory survive app/container
 restarts. The Compose configuration enables
-the monitoring console for the local demo. Disable it before a public
-deployment unless the route is protected by operator authentication.
+the monitoring console for the local demo. The Compose `DATABASE_URL` points
+to the `postgres` service inside its network; the `127.0.0.1` URL in
+`.env.example` is for Python running on the host, not inside a container. No
+hosted Supabase project is needed for this local path. This Compose file also
+uses development database credentials and is not a public deployment template.
+Disable the internal UI before any public deployment unless the route is
+protected by operator authentication.
 
 ## Environment
 
@@ -23,19 +29,19 @@ deployment unless the route is protected by operator authentication.
 | `MODEL` | Chat model | `gpt-4o-mini` |
 | `DATABASE_URL` | PostgreSQL/Supabase connection string | local PostgreSQL |
 | `SUPPORT_CHATBOT_DB_POOL_MIN` | Minimum backend connections per process | `1` |
-| `SUPPORT_CHATBOT_DB_POOL_MAX` | Maximum backend connections per process | `5` |
+| `SUPPORT_CHATBOT_DB_POOL_MAX` | Maximum backend connections per process | `10` |
 | `SUPPORT_CHATBOT_HOST` | Bind address | `127.0.0.1` |
 | `SUPPORT_CHATBOT_PORT` | HTTP port | `8000` |
-| `SUPPORT_CHATBOT_CACHE_DIR` | Model/vector cache | repository `.cache/` |
+| `SUPPORT_CHATBOT_CACHE_DIR` | Model/vector cache | repository `.cache/` by default; Compose mounts `/data/cache` |
 | `SUPPORT_CHATBOT_MAX_REQUEST_BYTES` | Request-body limit | `65536` |
 | `SUPPORT_CHATBOT_SECURE_COOKIES` | Add the cookie `Secure` flag | `false` |
 | `SUPPORT_CHATBOT_EXPOSE_INTERNAL_UI` | Enable traces and `/monitoring` | `false` |
 | `SUPPORT_CHATBOT_AUTH_SESSION_HOURS` | Login-session lifetime | `24` |
 | `SUPPORT_CHATBOT_EXPOSE_RESET_TOKEN` | Return reset token in API response; local testing only | `false` |
-| `SUPPORT_CHATBOT_PUBLIC_BASE_URL` | Public HTTPS origin reachable by QStash | required for workflows |
-| `QSTASH_TOKEN` | Server-side Upstash/QStash publish credential | required for workflows |
-| `QSTASH_CURRENT_SIGNING_KEY` | Verify current QStash callback signatures | required for workflows |
-| `QSTASH_NEXT_SIGNING_KEY` | Verify callbacks during key rotation | required for workflows |
+| `SUPPORT_CHATBOT_PUBLIC_BASE_URL` | Public HTTPS origin reachable by QStash | required for external workflows; not local dispatcher |
+| `QSTASH_TOKEN` | Server-side Upstash/QStash publish credential | required for external workflows; not local dispatcher |
+| `QSTASH_CURRENT_SIGNING_KEY` | Verify current QStash callback signatures | required for external workflows; not local dispatcher |
+| `QSTASH_NEXT_SIGNING_KEY` | Verify callbacks during key rotation | required for external workflows; not local dispatcher |
 | `SUPPORT_CHATBOT_WORKFLOW_RETRIES` | Upstash delivery retry count | `3` |
 | `SUPPORT_CHATBOT_WORKFLOW_LEASE_SECONDS` | Crash-recovery claim lease | `300` |
 | `SUPPORT_CHATBOT_APPROVAL_REMINDER_SECONDS` | First customer-delay reminder | `3600` |
