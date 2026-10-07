@@ -265,7 +265,12 @@ def run_case(case, planner_name):
         "observed": observed, "reply": reply, "error": error,
         "transcript": json.dumps(convo.history),
         "store": order_statuses,
-        "llm_calls": len(llm), "cost": sum(e.get("cost") or 0 for e in llm),
+        "llm_calls": len(llm),
+        "tokens": sum(e.get("tokens") or 0 for e in llm),
+        "tokens_in": sum(e.get("tokens_in") or 0 for e in llm),
+        "tokens_out": sum(e.get("tokens_out") or 0 for e in llm),
+        "cached_tokens": sum(e.get("cached") or 0 for e in llm),
+        "cost": sum(e.get("cost") or 0 for e in llm),
         "ms": round((time.perf_counter() - t0) * 1000),
     }
 

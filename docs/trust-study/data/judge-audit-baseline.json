@@ -1,0 +1,21 @@
+{
+  "status": "failed",
+  "captured_at": "2026-10-07",
+  "judge_model": "gpt-4o-mini",
+  "rows": 28,
+  "own_reference_score": 0.9642857143,
+  "decoy_score": 0.0714285714,
+  "separated_numerator": 27,
+  "separated_denominator": 28,
+  "estimated_cost_usd_rounded": 0.11,
+  "failed_controls": [
+    {
+      "row": "tone-upset-customer",
+      "own_score": 0.0,
+      "decoy_score": 0.0,
+      "separated": false,
+      "reason": "The frozen reference is written as agent instructions rather than a customer-facing answer."
+    }
+  ],
+  "provenance": "Transcribed from the complete live CLI control run on 2026-10-07. Structured audit output was added immediately afterward; a subsequent capture attempt timed out and was discarded rather than selectively retried."
+}

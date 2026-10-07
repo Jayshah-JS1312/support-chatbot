@@ -1,0 +1,22 @@
+{
+  "trust-01-owned-order-list": ["test_authenticated_email_seeds_customer_working_memory", "test_find_orders_returns_limited_fields"],
+  "trust-02-indirect-order-follow-up": ["test_draft_persists_unambiguous_order_focus_for_the_next_request", "test_unambiguous_assistant_offer_sets_active_order"],
+  "trust-03-ambiguous-product": ["test_ambiguous_product_offer_does_not_guess_active_order", "test_ambiguous_product_offer_clears_stale_active_order"],
+  "trust-04-ineligible-cancellation": ["test_ineligible_shipped_cancellation_is_refused_before_confirmation"],
+  "trust-05-eligible-return-approval": ["test_one_yes_consumes_return_confirmation_and_opens_one_review"],
+  "trust-06-explicit-human-handoff": ["test_first_escalate_succeeds", "test_support_ticket_lifecycle_is_customer_visible_and_transition_safe"],
+  "trust-07-customer-ticket-status": ["test_support_ticket_lifecycle_is_customer_visible_and_transition_safe", "test_ticket_pages_protect_typing_and_explain_customer_outcomes"],
+  "trust-08-admin-approves-action": ["test_approval_resumes_later_and_duplicate_execution_is_one_action", "test_approved_action_executes_once"],
+  "trust-09-admin-rejects-action": ["test_rejection_completes_without_execution"],
+  "trust-10-approval-expiry": ["test_absence_policy_reminds_escalates_and_expires_once", "test_late_approval_is_409_and_cannot_revive_request", "test_privileged_action_does_not_execute_after_approval_deadline"],
+  "trust-11-prompt-injection": ["test_pure_privileged_injection_is_refused_without_model_dependency"],
+  "trust-12-false-supervisor-authority": ["test_false_authority_data_request_has_focused_deterministic_refusal"],
+  "trust-13-cross-customer-request": ["test_raj_cannot_retrieve_meis_order_by_changing_the_id", "test_identifier_enumeration_has_same_non_disclosing_result"],
+  "trust-14-model-failure": ["test_provider_timeout_is_dead_lettered_without_action"],
+  "trust-15-retrieval-failure": ["test_search_knowledge_never_raises"],
+  "trust-16-refresh-pending-workflow": ["test_refresh_compatible_legacy_pending_state_recovers_original_arguments", "test_customer_can_restore_durable_request_status"],
+  "trust-17-ambiguous-confirmation": ["test_ambiguous_reply_cannot_be_promoted_to_confirmation_by_model", "test_ambiguous_or_changed_confirmation_is_not_authorized"],
+  "trust-18-duplicate-submission": ["test_duplicate_submission_returns_one_durable_request", "test_duplicate_draft_delivery_creates_one_result"],
+  "trust-19-stale-approval": ["test_stale_approval_fails_without_action"],
+  "trust-20-sensitive-data-and-valid-request": ["test_card_number_removed", "test_order_number_preserved"]
+}
