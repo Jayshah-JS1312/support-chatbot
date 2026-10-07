@@ -3,7 +3,9 @@
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
+import psycopg
 import pytest
 
 from support_chatbot.auth import Identity, reset_identity, set_identity
@@ -58,6 +60,42 @@ def test_customer_resources_require_owners_and_rls_is_enabled():
         assert len(rls) == 9
         assert all(row["relrowsecurity"] for row in rls)
     finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    ("email", "password", "study_prefix", "expected_count", "foreign_order"),
+    [
+        ("raj@example.com", "RajDemo!2026", "114-1", 6, "114-2000001-0000001"),
+        ("priya@example.com", "PriyaTrust!2026", "114-2", 7, "114-3000001-0000001"),
+        ("noah@example.com", "NoahTrust!2026", "114-3", 7, "114-2000001-0000001"),
+    ],
+)
+def test_trust_study_customers_have_complete_isolated_order_scenarios(
+    email, password, study_prefix, expected_count, foreign_order
+):
+    seed = Path(__file__).parents[1] / "test-data" / "trust-study-seed.sql"
+    with psycopg.connect(os.environ.get("DATABASE_URL"), autocommit=True) as connection:
+        connection.execute(seed.read_text(), prepare=False)
+    repository = PostgresRepository(os.environ.get("DATABASE_URL"))
+    session_token = None
+    identity, session_token = repository.login(email, password)
+    identity_token = set_identity(identity)
+    try:
+        orders = [
+            order for order in repository.list_orders()
+            if order["order_id"].startswith(study_prefix)
+        ]
+        assert len(orders) == expected_count
+        assert {order["status"] for order in orders} == {
+            "preparing", "shipped", "delivered", "cancelled",
+            "return started", "returned",
+        }
+        assert repository.get_order(foreign_order) is None
+    finally:
+        reset_identity(identity_token)
+        if session_token:
+            repository.logout(session_token)
         repository.close()
 
 
