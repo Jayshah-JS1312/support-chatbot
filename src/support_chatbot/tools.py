@@ -246,3 +246,24 @@ def _dispatch(name, args):
         # The agent called its own tool wrongly. That is not a policy
         # refusal — it is a mistake it can fix, so say so explicitly.
         return {"error": f"Bad call to {name}: {e}", "retry": True}
+    except Exception as error:
+        # Dependency and repository outages are safe data for the planner, not
+        # a reason to crash the workflow or improvise an answer. Keep the raw
+        # exception type in protected telemetry and expose only a stable
+        # message. Exception text can contain credentials or customer data.
+        observe.log(
+            "error", stage="tool_dependency", tool=name,
+            error_type=type(error).__name__,
+        )
+        if name == "search_knowledge":
+            message = (
+                "Policy knowledge is temporarily unavailable. Do not state a "
+                "policy as fact; tell the customer you could not verify it and "
+                "offer a retry or human support."
+            )
+        else:
+            message = (
+                "Customer support data is temporarily unavailable. Do not guess; "
+                "tell the customer to retry or request human support."
+            )
+        return {"error": message, "temporarily_unavailable": True}

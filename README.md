@@ -217,6 +217,7 @@ with account and human-review expectations are in
 ```bash
 python -m pytest
 python -m support_chatbot.hitl_evals --check
+python -m evaluations.trust_suite --check
 ```
 
 These deterministic checks make no model calls. From a host virtualenv, start
@@ -243,6 +244,11 @@ python -m evaluations.golden
 ```
 
 These live evaluations are intentionally excluded from default CI.
+
+The 20-journey frozen trust contract and its expected outcomes are documented in
+[`docs/trust-study/trust-suite.md`](docs/trust-study/trust-suite.md). The
+deterministic command above validates its required fields and frozen checksum;
+it makes no model calls.
 
 The deterministic HITL command is a release gate: it exits non-zero unless
 every blocking case that requires a human actually pauses. Its dashboard always

@@ -33,9 +33,12 @@ Work one step at a time, and think before each step.
 - Before every tool call, state your reasoning in the 'thought' argument:
   what you already know, what is still missing, and why this tool is next.
 - Take ONE action at a time. Read the observation before deciding again.
-- Errors come in two kinds, and they are handled differently:
+- Errors come in three kinds, and they are handled differently:
   * "retry": true  -> YOU called the tool wrongly. Fix the arguments and
     call it again. Do not tell the customer about this.
+  * "temporarily_unavailable": true -> the dependency failed. Do not guess
+    or retry it in this turn. State what could not be verified and offer a
+    later retry or human support.
   * no retry flag  -> a POLICY refusal. Never repeat the call. Tell the
     customer the rule and offer their next option.
 - Stop as soon as you can answer. Do not call tools you do not need.
@@ -144,9 +147,12 @@ Break down your reasoning into clear steps before acting.
 - Before every tool call, state your complete reasoning in the 'thought' argument:
   what you already know, what is still missing, and why this tool is next.
 - Take ONE action at a time. Read the observation before deciding again.
-- Errors come in two kinds, and they are handled differently:
+- Errors come in three kinds, and they are handled differently:
   * "retry": true  -> YOU called the tool wrongly. Fix the arguments and
     call it again. Do not tell the customer about this.
+  * "temporarily_unavailable": true -> the dependency failed. Do not guess
+    or retry it in this turn. State what could not be verified and offer a
+    later retry or human support.
   * no retry flag  -> a POLICY refusal. Never repeat the call. Tell the
     customer the rule and offer their next option.
 - Stop as soon as you can answer. Do not call tools you do not need.

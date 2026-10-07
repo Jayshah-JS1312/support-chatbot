@@ -220,10 +220,11 @@ class TestSearchKnowledge:
     def test_search_knowledge_never_raises(self, fresh_store):
         """Even if knowledge.search raises, the tool returns a result."""
         with patch("support_chatbot.knowledge.search", side_effect=Exception("db error")):
-            with pytest.raises(Exception):
-                # The current implementation will raise if search raises
-                # This is a known limitation; in a real system we'd catch it
-                tools.search_knowledge("query")
+            result = tools.run("search_knowledge", {"question": "query"})
+
+        assert result["temporarily_unavailable"] is True
+        assert "temporarily unavailable" in result["error"]
+        assert "db error" not in result["error"]
 
 
 class TestEscalate:

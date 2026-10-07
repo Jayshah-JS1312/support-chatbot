@@ -25,6 +25,7 @@ turns.
 """
 
 import json
+import re
 from support_chatbot.persistence import get_repository
 
 
@@ -124,6 +125,7 @@ class WorkingMemory:
     def __init__(self):
         self.customer_email = None
         self.orders = {}        # order_id -> what we looked up
+        self.active_order_id = None  # one verified order referred to most recently
         self.actions = []       # things that actually changed something
         self.failures = []      # what we tried that was refused, and why
         self.escalation = None  # ticket number, once we have one
@@ -134,6 +136,15 @@ class WorkingMemory:
 
     def record(self, tool, args, result):
         """Fold one Observation into what we know."""
+        order_id = args.get("order_id")
+        if order_id and tool in {
+            "get_order", "track_package", "cancel_order", "start_return",
+        } and not result.get("retry") and (
+            not result.get("error") or order_id in self.orders
+        ):
+            # The tool boundary enforces ownership. Remember a successful
+            # lookup, or an ineligible operation for an order already verified.
+            self.active_order_id = order_id
         if result.get("needs_confirmation"):
             return                     # a preview changes nothing yet
         if result.get("proposal"):
@@ -160,7 +171,7 @@ class WorkingMemory:
             # A retryable error is the agent's own slip, not a decision about
             # the customer. Logging it would poison working memory with a
             # refusal that never happened.
-            if not result.get("retry"):
+            if not result.get("retry") and not result.get("temporarily_unavailable"):
                 self.failures.append(f"{tool}({args.get('order_id', '')}) "
                                      f"refused: {result['error']}")
             return
@@ -177,12 +188,74 @@ class WorkingMemory:
             self.escalation = result["ticket"]
             self.actions.append(f"Escalated to a human, ticket {result['ticket']}")
 
+    def update_focus_from_reply(self, reply):
+        """Remember one verified order that Ami unambiguously offers to act on.
+
+        A generated reply can list several orders and then offer to track or
+        return one of them. The transcript preserves the words, but an async
+        worker or a later model call should not have to infer that selection
+        again. Only orders already returned through the authorized tool layer
+        are candidates, and a segment matching more than one order is ignored.
+        """
+        if not reply or not self.orders:
+            return
+        action = re.compile(
+            r"\b(track|tracking|cancel|cancellation|return|refund|help with|"
+            r"check|status|proceed)\b", re.I,
+        )
+        segments = [part.strip() for part in re.split(r"(?<=[.!?])\s+|\n+", reply)]
+        for segment in reversed(segments):
+            if not action.search(segment):
+                continue
+            matches = self._orders_mentioned_in(segment)
+            if len(matches) == 1:
+                self.active_order_id = matches[0]
+                return
+            if len(matches) > 1:
+                # A clarification must replace stale focus. Otherwise a prior
+                # active order can silently bias a later ambiguous request.
+                self.active_order_id = None
+                return
+
+    def _orders_mentioned_in(self, text):
+        normalized = re.findall(r"[a-z0-9]+", text.casefold())
+        words = set(normalized)
+        item_tokens = {
+            order_id: re.findall(r"[a-z0-9]+", str(order.get("item", "")).casefold())
+            for order_id, order in self.orders.items()
+        }
+        token_owners = {}
+        for order_id, tokens in item_tokens.items():
+            for token in set(tokens):
+                token_owners.setdefault(token, set()).add(order_id)
+
+        scores = {}
+        for order_id, tokens in item_tokens.items():
+            if order_id.casefold() in text.casefold():
+                scores[order_id] = 100
+                continue
+            overlap = words.intersection(tokens)
+            shared_words = {
+                token for token in overlap if not token.isdigit() and len(token) >= 3
+            }
+            distinctive = {
+                token for token in overlap
+                if len(token_owners.get(token, ())) == 1
+                and (len(token) >= 4 or (token.isdigit() and shared_words))
+            }
+            if len(overlap) >= 2 or distinctive:
+                scores[order_id] = len(overlap) + (2 * len(distinctive))
+        if not scores:
+            return []
+        best = max(scores.values())
+        return [order_id for order_id, score in scores.items() if score == best]
+
     # -- reading ----------------------------------------------------------
 
     def brief(self):
         """Working memory as a short note the model reads before every step."""
-        if not any([self.customer_email, self.orders, self.actions,
-                    self.failures, self.escalation, self.pending]):
+        if not any([self.customer_email, self.orders, self.active_order_id,
+                    self.actions, self.failures, self.escalation, self.pending]):
             return None
 
         lines = ["WHAT YOU ALREADY KNOW (do not look these up again):"]
@@ -196,6 +269,14 @@ class WorkingMemory:
             if o.get("delivered_on"):
                 bits.append(f"delivered={o['delivered_on']}")
             lines.append("- " + ", ".join(bits))
+        if self.active_order_id:
+            active = self.orders.get(self.active_order_id, {})
+            lines.append(
+                f"CURRENT ORDER CONTEXT: {self.active_order_id}"
+                f" ({active.get('item', 'verified order')}). Resolve pronouns or "
+                "acceptance of Ami's latest offer to this order. If the customer "
+                "explicitly describes multiple matching orders, ask which one."
+            )
         if self.actions:
             lines.append("ALREADY DONE (never do these twice):")
             lines += [f"- {a}" for a in self.actions]
@@ -219,6 +300,7 @@ class WorkingMemory:
 
     def to_dict(self):
         return {"customer_email": self.customer_email, "orders": self.orders,
+                "active_order_id": self.active_order_id,
                 "actions": self.actions, "failures": self.failures,
                 "escalation": self.escalation, "turn": self.turn,
                 "pending": self.pending}
@@ -228,6 +310,8 @@ class WorkingMemory:
         w = cls()
         w.customer_email = data.get("customer_email")
         w.orders = data.get("orders", {})
+        active_order_id = data.get("active_order_id")
+        w.active_order_id = active_order_id if active_order_id in w.orders else None
         w.actions = data.get("actions", [])
         w.failures = data.get("failures", [])
         w.escalation = data.get("escalation")
